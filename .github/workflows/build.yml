@@ -1,0 +1,102 @@
+name: Build XianYuApis
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version'
+        required: false
+        default: '1.0.0'
+
+jobs:
+  build-windows:
+    name: Build Windows exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bundle Node for packaging
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force node_bin | Out-Null
+          Copy-Item (Get-Command node).Source node_bin\node.exe
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller --clean --noconfirm --distpath dist --workpath build xianyu.spec
+
+      - name: Package Windows build
+        shell: pwsh
+        run: Compress-Archive -Path dist -DestinationPath xianyu-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-windows
+          path: xianyu-windows.zip
+
+  build-macos:
+    name: Build macOS executable
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bundle Node for packaging
+        run: |
+          mkdir -p node_bin
+          cp "$(command -v node)" node_bin/node
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.txt pyinstaller
+
+      - name: Build with PyInstaller
+        run: python3 -m PyInstaller --clean --noconfirm --distpath dist --workpath build xianyu.spec
+
+      - name: Package macOS build
+        run: cd dist && zip -r ../xianyu-macos.zip .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xianyu-macos
+          path: xianyu-macos.zip
+
+  release:
+    name: Create release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ github.event.inputs.version || '1.0.0' }}"
+          gh release create "v${VERSION}" artifacts/*/*.zip \
+            --title "v${VERSION}" \
+            --notes "XianYuApis v${VERSION}"
