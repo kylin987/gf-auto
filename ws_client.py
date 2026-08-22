@@ -82,6 +82,7 @@ class GatewayClient:
         self.ws_url = ws_url or os.environ.get('XY_WS_URL') or DEFAULT_WS_URL
         self.store_id = store_id
         self.reply_url = reply_url
+        self.api_base_url = reply_url.rsplit('/', 2)[0]
         self.stop_event = stop_event
         self.ws = None
         self._heartbeat_task = None
@@ -101,7 +102,7 @@ class GatewayClient:
                             self._heartbeat_task.cancel()
                             self._heartbeat_task = None
             except Exception as exc:
-                logger.warning(f'AI 服务端连接异常：{exc}')
+                logger.warning(f'插件网关连接异常：{exc}')
             finally:
                 self.ws = None
             if self.stop_event is not None and self.stop_event.is_set():
@@ -169,6 +170,13 @@ class GatewayClient:
         if msg_type == 'server.error':
             logger.warning(f'网关错误：{payload.get("message")}')
             return
+        if msg_type in {
+            'task.xianyu.send_message',
+            'task.xianyu.get_order_detail',
+            'task.xianyu.adjust_price',
+        }:
+            await self._handle_task(data)
+            return
 
         # 兼容旧服务端 reply 格式：reply 可能在顶层或 payload 里
         reply = data.get('reply') or payload.get('reply')
@@ -196,3 +204,120 @@ class GatewayClient:
             requests.post(self.reply_url, json=payload, timeout=10)
         except Exception:
             pass
+
+    async def _handle_task(self, data):
+        payload = data.get('payload') or {}
+        task_id = str(payload.get('taskId') or data.get('id') or '').strip()
+        task_type = str(payload.get('taskType') or data.get('type') or '').strip()
+        if not task_id or not task_type:
+            return
+        await self._send_task_ack(task_id, task_type)
+        try:
+            result = await asyncio.to_thread(self._execute_task, task_type, payload.get('payload') or {})
+            await self._send_task_result(task_id, task_type, True, 'success', result=result)
+        except Exception as exc:
+            logger.warning(f'插件任务执行失败：{task_type} {task_id} {exc}')
+            await self._send_task_result(
+                task_id,
+                task_type,
+                False,
+                'failed',
+                error_code=exc.__class__.__name__,
+                error_message=str(exc),
+                result={},
+            )
+
+    async def _send_task_ack(self, task_id, task_type):
+        if self.ws is None:
+            return
+        await self.ws.send(json.dumps({
+            'version': 'plugin.v1',
+            'type': 'task.ack',
+            'id': 'ack_' + task_id,
+            'sentAt': datetime.now().astimezone().isoformat(),
+            'payload': {
+                'taskId': task_id,
+                'taskType': task_type,
+                'receivedAt': datetime.now().astimezone().isoformat(),
+            },
+        }, ensure_ascii=False))
+
+    async def _send_task_result(self, task_id, task_type, success, status,
+                                error_code=None, error_message=None, result=None):
+        if self.ws is None:
+            return
+        await self.ws.send(json.dumps({
+            'version': 'plugin.v1',
+            'type': 'task.result',
+            'id': 'result_' + task_id,
+            'sentAt': datetime.now().astimezone().isoformat(),
+            'payload': {
+                'taskId': task_id,
+                'taskType': task_type,
+                'status': status,
+                'success': bool(success),
+                'errorCode': error_code,
+                'errorMessage': error_message,
+                'result': result or {},
+                'finishedAt': datetime.now().astimezone().isoformat(),
+            },
+        }, ensure_ascii=False))
+
+    def _execute_task(self, task_type, payload):
+        if task_type == 'task.xianyu.send_message':
+            return self._local_post('/api/reply', self._send_message_payload(payload))
+        if task_type == 'task.xianyu.get_order_detail':
+            order_id = payload.get('orderId') or payload.get('order_id')
+            if not order_id:
+                raise ValueError('payload.orderId不能为空')
+            return self._local_post('/api/order_detail', {'orderId': str(order_id)})
+        if task_type == 'task.xianyu.adjust_price':
+            order_id = payload.get('orderId') or payload.get('order_id')
+            modify_fee = payload.get('modifyFee') or payload.get('modify_fee')
+            new_transport_fee = payload.get('newTransportFee')
+            if new_transport_fee is None:
+                new_transport_fee = payload.get('new_transport_fee', 0)
+            if order_id is None or modify_fee is None:
+                raise ValueError('payload.orderId和payload.modifyFee不能为空')
+            return self._local_post('/api/adjust_price', {
+                'orderId': str(order_id),
+                'modifyFee': str(modify_fee),
+                'newTransportFee': str(new_transport_fee),
+            })
+        raise ValueError(f'不支持的任务类型：{task_type}')
+
+    @staticmethod
+    def _send_message_payload(payload):
+        toid = payload.get('toid') or payload.get('buyerId') or payload.get('senderUserId')
+        if not toid:
+            raise ValueError('payload.toid不能为空')
+        data = {
+            'toid': str(toid),
+            'cid': str(payload.get('cid') or ''),
+            'item_id': str(payload.get('itemId') or payload.get('item_id') or ''),
+        }
+        image_url = payload.get('imageUrl') or payload.get('image_url')
+        if image_url:
+            data.update({
+                'image_url': str(image_url),
+                'width': int(payload.get('width') or 0),
+                'height': int(payload.get('height') or 0),
+            })
+            return data
+        text = payload.get('text')
+        if text is None:
+            text = payload.get('content')
+        if text is None:
+            raise ValueError('payload.text不能为空')
+        data['text'] = str(text)
+        return data
+
+    def _local_post(self, path, payload):
+        response = requests.post(self.api_base_url + path, json=payload, timeout=30)
+        try:
+            body = response.json()
+        except Exception:
+            body = {'raw': response.text}
+        if response.status_code >= 400:
+            raise RuntimeError(str(body.get('error') or body))
+        return body

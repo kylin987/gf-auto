@@ -864,7 +864,7 @@ class XianyuLive:
             if self._is_chat_message(parsed):
                 simplified = self._simplify_chat_message(parsed)
                 self._save_raw_message(simplified)
-                if simplified.get('contentType') in (1, 2) and self.ws_client is not None:
+                if simplified.get('contentType') in (1, 2, 3, 4, 5) and self.ws_client is not None:
                     await self.ws_client.send(simplified)
             else:
                 self._save_raw_message(parsed)

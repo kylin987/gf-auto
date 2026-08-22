@@ -119,11 +119,11 @@ python goofish_live.py --debug
 - `XY_SKIP_CHROME_CHECK`：设为 `1` 可跳过启动时的 Chrome 安装检测（仅建议已有有效 Cookie 时使用）
 - `XY_NODE_BIN`：可选，指定 Node.js 可执行文件路径
 - `XY_LOG_DIR`：聊天原始 JSON 日志目录，默认 `log`
-- `XY_WS_URL`：AI 服务端 WebSocket 地址，默认 `ws://127.0.0.1:7272`
+- `XY_WS_URL`：插件网关 WebSocket 地址，默认使用登录接口返回的 `wsUrl`，兜底为 `wss://plugin-gateway.yinghuasuan.com/ws`
 
 收到的每条聊天消息会按天写入 `log/chat_YYYY-MM-DD.jsonl`（每行一条原始 JSON），方便排查和分析聊天记录。
 
-程序会自动连接 AI 服务端（默认 `ws://127.0.0.1:7272`）：把收到的文本/图片消息转发过去，服务端返回带 `reply` 字段（单个字符串或数组）的数据后，再调用本地 `/api/reply` 接口把回复发回给用户；`reply` 为数组时会按顺序逐条发送。
+程序会先调用插件网关登录接口，登录成功后连接网关 WebSocket：把收到的文本、图片、订单卡片包装成 `plugin.v1` 的 `xianyu.message` 上报。业务回复、查订单、改价由网关下发 `task.xianyu.*` 任务，程序执行本地 `/api/reply`、`/api/order_detail`、`/api/adjust_price` 后回传 `task.result`。
 
 完整 WS 对接说明见 [WS_API.md](WS_API.md)。
 
@@ -226,7 +226,7 @@ Windows 打包改为 onedir 模式，不再每次启动解压几十 MB 文件，
 
 ```
 XianYuApis/
-├── goofish_live.py      # 主入口：WebSocket 消息监听 & 回复逻辑（在此接入 AI）
+├── goofish_live.py      # 主入口：闲鱼 WebSocket 监听、本地回复、插件网关接入
 ├── goofish_apis.py      # HTTP API 封装（登录、刷新 Token、商品详情、上传媒体）
 ├── local_api.py         # 本地 HTTP 接口（健康检查、给指定用户回复消息）
 ├── cookie_auth.py       # Chrome 登录自动获取/保存 Cookie
