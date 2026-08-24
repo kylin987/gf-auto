@@ -170,11 +170,11 @@ class XianyuDesktopApp:
             widget.destroy()
 
     def _header(self, title, subtitle=''):
-        header = tk.Frame(self.main, bg=C['surface'], height=72)
+        header = tk.Frame(self.main, bg=C['surface'], height=88)
         header.pack(fill='x')
         header.pack_propagate(False)
         left = tk.Frame(header, bg=C['surface'])
-        left.pack(side='left', padx=27, pady=14)
+        left.pack(side='left', padx=27, pady=(13, 10))
         tk.Label(left, text=title, bg=C['surface'], fg=C['ink'], font=(UI_FONT, 18, 'bold')).pack(anchor='w')
         if subtitle:
             tk.Label(left, text=subtitle, bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(3, 0))
@@ -199,28 +199,25 @@ class XianyuDesktopApp:
     def _show_overview(self):
         self._clear_main()
         self._navigate_button('overview')
-        header = self._header('店铺概览', '当前运行状态与网关事件')
+        account = self.gateway_auth.get('user') or {}
+        self._header('客户端概览', f'子账号：{account.get("username") or "未知"}  ·  客户端版本：v{APP_VERSION}')
         body = tk.Frame(self.main, bg=C['bg'])
         body.pack(fill='both', expand=True, padx=25, pady=23)
-        instance = self._selected()
-        if not instance:
+        if not self.instances:
             self._empty_state(body)
             return
-        state = self._state(instance)
         top = tk.Frame(body, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'], padx=21, pady=18)
         top.pack(fill='x')
         info = tk.Frame(top, bg=C['surface'])
         info.pack(side='left', fill='x', expand=True)
-        tk.Label(info, text=instance.get('name') or '未命名店铺', bg=C['surface'], fg=C['ink'], font=(UI_FONT, 20, 'bold')).pack(anchor='w')
-        account = state.get('account') or {}
-        shop_id = account.get('userId') or instance.get('platformShopId') or '未绑定'
-        nick = account.get('nick') or '等待连接 Chrome'
-        tk.Label(info, text=f'Chrome 闲鱼：{nick}  ·  ID：{shop_id}', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(7, 0))
-        tk.Label(info, text=f'监听状态：{state.get("hint") or "未启动"}', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(4, 0))
+        running_count = sum(self._state(store).get('status') == 'running' for store in self.instances)
+        chrome_count = sum(self._state(store).get('status') == 'ready' for store in self.instances)
+        tk.Label(info, text='闲鱼店铺监听', bg=C['surface'], fg=C['ink'], font=(UI_FONT, 20, 'bold')).pack(anchor='w')
+        tk.Label(info, text=f'已授权店铺 {len(self.instances)} 家  ·  运行中 {running_count} 家  ·  Chrome 已登录 {chrome_count} 家', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 11)).pack(anchor='w', pady=(7, 0))
+        tk.Label(info, text='店铺启停与重新登录请在“店铺实例”中单独操作。', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(4, 0))
         stats = tk.Frame(body, bg=C['bg'])
         stats.pack(fill='x', pady=14)
-        events = [item for item in self.events if item.get('instanceId') == instance.get('id')]
-        for label, value, color in [('接收消息', sum(item['type'] == 'receive' for item in events), C['ink']), ('网关上报', sum(item['type'] == 'report' for item in events), C['green']), ('订单事件', sum(item['type'] == 'order' for item in events), C['gold'])]:
+        for label, value, color in [('接收消息', sum(item['type'] == 'receive' for item in self.events), C['ink']), ('网关上报', sum(item['type'] == 'report' for item in self.events), C['green']), ('订单事件', sum(item['type'] == 'order' for item in self.events), C['gold'])]:
             card = tk.Frame(stats, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'], padx=15, pady=13)
             card.pack(side='left', fill='x', expand=True, padx=(0, 10))
             tk.Label(card, text=label, bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w')
@@ -229,9 +226,9 @@ class XianyuDesktopApp:
         panels.pack(fill='both', expand=True)
         logs = tk.Frame(panels, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'])
         logs.pack(side='left', fill='both', expand=True, padx=(0, 10))
-        self._panel_header(logs, '实时事件', lambda: self._navigate('events'))
+        self._panel_header(logs, '公共事件', lambda: self._navigate('events'))
         self.overview_log = self._make_log_widget(logs)
-        self._render_log_widget(self.overview_log, instance.get('id'))
+        self._render_log_widget(self.overview_log, None)
         right = tk.Frame(panels, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'], width=260)
         right.pack(side='left', fill='y')
         right.pack_propagate(False)
@@ -240,10 +237,9 @@ class XianyuDesktopApp:
         for store in self.instances:
             item = tk.Frame(right, bg=C['surface'])
             item.pack(fill='x', padx=14, pady=9)
-            current = store.get('id') == instance.get('id')
             status, bg, fg = self._status_style(self._state(store).get('status'))
-            tk.Button(item, text=store.get('name') or '未命名店铺', command=lambda sid=store.get('id'): self._select_instance(sid),
-                      anchor='w', bg=C['surface'], fg=C['red'] if current else C['ink'], bd=0, relief='flat',
+            tk.Button(item, text=store.get('name') or '未命名店铺', command=lambda: self._navigate('stores'),
+                      anchor='w', bg=C['surface'], fg=C['ink'], bd=0, relief='flat',
                       cursor='hand2', font=(UI_FONT, 10, 'bold')).pack(side='left', fill='x', expand=True)
             tk.Label(item, text=status, bg=bg, fg=fg, font=(UI_FONT, 8, 'bold'), padx=5, pady=2).pack(side='right')
         for store in self._authorized_stores():
@@ -475,7 +471,10 @@ class XianyuDesktopApp:
 
     @staticmethod
     def _useful_log(text):
-        return any(key in text for key in ('收到买家', '上报网关', '网关任务', '发送消息', '订单', '登录', '连接', '失败', '异常', '校验'))
+        return any(key in text for key in (
+            '收到买家', '上报网关', '网关任务', '发送消息', '订单', '登录', '连接', '失败', '异常', '校验',
+            '闲鱼 WS', '闲鱼同步', '闲鱼收到', '解析', '网关绑定成功', 'WS 服务端消息',
+        ))
 
     @staticmethod
     def _event_type(text):
@@ -485,7 +484,7 @@ class XianyuDesktopApp:
             return 'order'
         if '上报网关' in text:
             return 'report'
-        if '收到' in text:
+        if '收到' in text or '同步推送' in text:
             return 'receive'
         return 'system'
 

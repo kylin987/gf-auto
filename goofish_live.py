@@ -875,16 +875,23 @@ class XianyuLive:
         try:
             package = message["body"]["syncPushPackage"]["data"]
         except Exception:
+            if message.get('lwp') not in ('/!', '/s/sync'):
+                logger.info('闲鱼 WS 收到非同步业务帧，等待后续解析')
             return
         if not isinstance(package, list):
+            logger.warning('闲鱼同步推送格式异常，未得到消息列表')
             return
+
+        logger.info(f'闲鱼同步推送到达：{len(package)} 条')
 
         for item in package:
             raw = item.get("data") if isinstance(item, dict) else item
             parsed = self._parse_sync_data(raw)
             if parsed is None:
+                logger.warning('闲鱼消息解析失败，未能识别内容')
                 continue
             if self._is_status_event(parsed):
+                logger.info('闲鱼收到状态类推送，非买家消息')
                 continue
             self._log_message_structure(parsed)
             if self._is_chat_message(parsed):
@@ -895,6 +902,7 @@ class XianyuLive:
                     await self.ws_client.send(simplified)
             else:
                 self._save_raw_message(parsed)
+                logger.info('闲鱼收到未识别消息，已保留结构供排查')
             if not self._is_chat_message(parsed):
                 continue
 
