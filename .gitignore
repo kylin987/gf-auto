@@ -32,5 +32,6 @@ test1.py
 test2.py
 cookies.json
 .chrome_profile/
+.superpowers/
 node_bin/
 log/
