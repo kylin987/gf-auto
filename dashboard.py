@@ -28,9 +28,9 @@ import updater
 UI_FONT = 'PingFang SC' if os.name == 'posix' else 'Microsoft YaHei'
 C = {
     'bg': '#fff8e8', 'surface': '#fffef9', 'ink': '#2b2116', 'muted': '#776d5e',
-    'line': '#eee2c9', 'nav': '#ef2b24', 'nav_active': '#c91d1a', 'nav_muted': '#ffd2ca',
+    'line': '#eee2c9', 'nav': '#ffd400', 'nav_active': '#a91f1b', 'nav_muted': '#7a421a',
     'red': '#c7372f', 'red_soft': '#ffe9e5', 'green': '#20815f', 'green_soft': '#e6f6ee',
-    'yellow': '#ffd400', 'yellow_deep': '#9a6800', 'yellow_soft': '#fff1b3', 'gray_soft': '#f5eddd',
+    'yellow': '#bc2923', 'yellow_deep': '#8f1c19', 'yellow_soft': '#fbe4e1', 'gray_soft': '#f5eddd',
 }
 
 
@@ -136,14 +136,14 @@ class XianyuDesktopApp:
         tk.Label(brand, image=self.brand_logo, bg=C['nav']).pack(side='left', padx=(0, 10))
         brand_text = tk.Frame(brand, bg=C['nav'])
         brand_text.pack(side='left')
-        tk.Label(brand_text, text='闲鱼店铺插件', bg=C['nav'], fg='#fff', font=(UI_FONT, 15, 'bold')).pack(anchor='w')
+        tk.Label(brand_text, text='闲鱼店铺插件', bg=C['nav'], fg=C['ink'], font=(UI_FONT, 15, 'bold')).pack(anchor='w')
         tk.Label(brand_text, text='影划算票务', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 8, 'bold')).pack(anchor='w', pady=(2, 0))
         tk.Label(self.nav, text='工作台', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=24)
         self.nav_buttons = {}
         for key, label in [('overview', '店铺概览'), ('events', '实时事件'), ('stores', '店铺实例')]:
             button = tk.Button(self.nav, text=label, command=lambda value=key: self._navigate(value),
                                anchor='w', padx=23, pady=10, bd=0, relief='flat', cursor='hand2',
-                               bg=C['nav'], fg='#fff4ef', activebackground=C['nav_active'], activeforeground='#fff',
+                               bg=C['nav'], fg=C['ink'], activebackground=C['nav_active'], activeforeground='#fff',
                                font=(UI_FONT, 11, 'bold'))
             button.pack(fill='x', padx=11, pady=2)
             self.nav_buttons[key] = button
@@ -151,7 +151,7 @@ class XianyuDesktopApp:
         for key, label in [('update', '软件更新'), ('settings', '设置')]:
             button = tk.Button(self.nav, text=label, command=lambda value=key: self._navigate(value),
                                anchor='w', padx=23, pady=10, bd=0, relief='flat', cursor='hand2',
-                               bg=C['nav'], fg='#fff4ef', activebackground=C['nav_active'], activeforeground='#fff',
+                               bg=C['nav'], fg=C['ink'], activebackground=C['nav_active'], activeforeground='#fff',
                                font=(UI_FONT, 11, 'bold'))
             button.pack(fill='x', padx=11, pady=2)
             self.nav_buttons[key] = button
@@ -164,9 +164,9 @@ class XianyuDesktopApp:
     def _navigate(self, view):
         self.current_view = view
         for button in self.nav_buttons.values():
-            button.configure(bg=C['nav'])
+            button.configure(bg=C['nav'], fg=C['ink'])
         if view in self.nav_buttons:
-            self.nav_buttons[view].configure(bg=C['nav_active'])
+            self.nav_buttons[view].configure(bg=C['nav_active'], fg='#fff')
         if view == 'overview':
             self._show_overview()
         elif view == 'stores':
@@ -270,7 +270,7 @@ class XianyuDesktopApp:
 
     def _navigate_button(self, key):
         for name, button in self.nav_buttons.items():
-            button.configure(bg=C['nav_active'] if name == key else C['nav'])
+            button.configure(bg=C['nav_active'] if name == key else C['nav'], fg='#fff' if name == key else C['ink'])
 
     def _panel_header(self, parent, title, action):
         row = tk.Frame(parent, bg=C['surface'], height=45)
@@ -326,7 +326,7 @@ class XianyuDesktopApp:
         status, bg, fg = self._status_style(state.get('status'))
         tk.Label(row, text=status, bg=bg, fg=fg, font=(UI_FONT, 9, 'bold'), padx=8, pady=4).grid(row=0, column=1, rowspan=2, padx=8)
         toggle_text = '停止运行' if state.get('status') == 'running' else '启动'
-        tk.Button(row, text=toggle_text, command=lambda item=instance: self._toggle_instance(item), bg=C['yellow'] if toggle_text == '启动' else C['ink'], fg=C['ink'] if toggle_text == '启动' else '#fff', bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold'), padx=13, pady=7).grid(row=0, column=2, rowspan=2, padx=(3, 0))
+        tk.Button(row, text=toggle_text, command=lambda item=instance: self._toggle_instance(item), bg=C['yellow'] if toggle_text == '启动' else C['ink'], fg='#fff', bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold'), padx=13, pady=7).grid(row=0, column=2, rowspan=2, padx=(3, 0))
         tk.Button(row, text='重新登录', command=lambda item=instance: self._force_relogin(item), bg=C['surface'], fg=C['yellow_deep'], bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold')).grid(row=0, column=3, rowspan=2, padx=(8, 0))
 
     def _empty_state(self, parent):
@@ -448,7 +448,7 @@ class XianyuDesktopApp:
         tk.Label(card, text='闲鱼店铺插件', bg=C['surface'], fg=C['ink'], font=(UI_FONT, 18, 'bold')).pack(anchor='w')
         tk.Label(card, text=f'当前版本：v{APP_VERSION}', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 11)).pack(anchor='w', pady=(9, 0))
         tk.Label(card, text='更新会下载经校验的 Windows 安装包，现有店铺 Cookie 与配置会被保留。', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(5, 17))
-        tk.Button(card, text='检查更新', command=self._start_update_check, bg=C['yellow'], fg=C['ink'], activebackground='#f2c500', activeforeground=C['ink'],
+        tk.Button(card, text='检查更新', command=self._start_update_check, bg=C['yellow'], fg='#fff', activebackground=C['yellow_deep'], activeforeground='#fff',
                   bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 11, 'bold'), padx=18, pady=10).pack(anchor='w')
 
     def _show_settings(self):
