@@ -115,8 +115,12 @@ def new_instance(store: dict) -> dict:
 
 
 def saved_chrome_account() -> dict[str, str]:
+    return chrome_account_from_cookie_file(default_cookie_file())
+
+
+def chrome_account_from_cookie_file(cookie_file: str) -> dict[str, str]:
     try:
-        payload = json.loads(Path(default_cookie_file()).read_text(encoding="utf-8"))
+        payload = json.loads(Path(cookie_file).read_text(encoding="utf-8"))
         cookies = payload.get("cookies", payload) if isinstance(payload, dict) else {}
         if not isinstance(cookies, dict):
             return {}

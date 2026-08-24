@@ -11,6 +11,7 @@ from tkinter import messagebox
 from loguru import logger
 
 from app_paths import (
+    chrome_account_from_cookie_file,
     instance_chrome_profile_dir,
     instance_cookie_file,
     instance_log_dir,
@@ -75,12 +76,27 @@ class XianyuDesktopApp:
         return f"{record['time']:HH:mm:ss}|{instance_id}|{record['message']}\n"
 
     def _sync_authorized_stores(self):
-        """旧单店数据只在授权店唯一时自动绑定，绝不猜测多店归属。"""
+        """迁移旧单店数据时，只用 Cookie 的实际闲鱼 ID 进行精确绑定。"""
         stores = self._authorized_stores()
+        stores_by_platform_id = {
+            str(store['platformShopId']): store
+            for store in stores if store.get('platformShopId')
+        }
         changed = False
-        if len(stores) == 1:
-            store = stores[0]
-            for instance in self.instances:
+        for instance in self.instances:
+            actual_shop_id = str(chrome_account_from_cookie_file(instance_cookie_file(instance['id'])).get('userId') or '')
+            matched_store = stores_by_platform_id.get(actual_shop_id)
+            if matched_store:
+                if int(instance.get('storeId') or 0) != matched_store['id']:
+                    instance.update({
+                        'storeId': matched_store['id'], 'storeName': matched_store['storeName'],
+                        'name': matched_store['storeName'] or instance.get('name') or '闲鱼店铺',
+                        'platformShopId': matched_store['platformShopId'],
+                    })
+                    changed = True
+                continue
+            if len(stores) == 1 and int(instance.get('storeId') or 0) == 0:
+                store = stores[0]
                 if int(instance.get('storeId') or 0) == 0:
                     instance.update({
                         'storeId': store['id'], 'storeName': store['storeName'],
