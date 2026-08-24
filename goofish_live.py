@@ -864,6 +864,7 @@ class XianyuLive:
             if self._is_chat_message(parsed):
                 simplified = self._simplify_chat_message(parsed)
                 self._save_raw_message(simplified)
+                logger.info(f'收到买家消息：{self._describe_simplified_message(simplified)}')
                 if simplified.get('contentType') in (1, 2, 3, 4, 5) and self.ws_client is not None:
                     await self.ws_client.send(simplified)
             else:
@@ -892,6 +893,26 @@ class XianyuLive:
                 # await self.send_msg(websocket, cid, send_user_id, make_image(image_object["url"], width, height))
             except Exception:
                 pass
+
+    @staticmethod
+    def _short_log_text(value, limit=80):
+        text = str(value or '').replace('\n', ' ').strip()
+        return text if len(text) <= limit else text[:limit] + '...'
+
+    def _describe_simplified_message(self, data):
+        content_type = int(data.get('contentType') or 0)
+        buyer = data.get('reminderTitle') or data.get('senderUserId') or ''
+        if content_type == 1:
+            return f'文字 买家={buyer} 内容={self._short_log_text(data.get("text"))}'
+        if content_type == 2:
+            return f'图片 买家={buyer} 地址={self._short_log_text(data.get("url"), 60)}'
+        if content_type == 3:
+            return f'创建订单 买家={buyer} 订单={data.get("orderId", "")}'
+        if content_type == 4:
+            return f'付款订单 买家={buyer} 订单={data.get("orderId", "")}'
+        if content_type == 5:
+            return f'退款订单 买家={buyer} 订单={data.get("orderId", "")}'
+        return f'类型={content_type} 买家={buyer}'
 
 
 def configure_terminal_logging(enabled):

@@ -28,12 +28,14 @@ def load_login_config():
         return {}
 
 
-def save_login_config(username='', device_id=''):
+def save_login_config(username='', password='', device_id=''):
     try:
         os.makedirs(LOGIN_CONFIG_DIR, exist_ok=True)
         data = load_login_config()
         if username:
             data['username'] = username
+        if password:
+            data['password'] = password
         if device_id:
             data['deviceId'] = device_id
         with open(LOGIN_CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -47,7 +49,11 @@ def get_or_create_device_id():
     device_id = config.get('deviceId') or ''
     if not device_id:
         device_id = 'fish-client-' + uuid.uuid4().hex[:12]
-        save_login_config(username=config.get('username', ''), device_id=device_id)
+        save_login_config(
+            username=config.get('username', ''),
+            password=config.get('password', ''),
+            device_id=device_id,
+        )
     return device_id
 
 
@@ -69,7 +75,7 @@ def gateway_login(username, password, device_id=None):
         raise GatewayLoginError(f'登录请求失败：{exc}') from exc
     if data.get('code') != 0 or not data.get('data'):
         raise GatewayLoginError(str(data.get('msg') or data))
-    save_login_config(username=username, device_id=device_id)
+    save_login_config(username=username, password=password, device_id=device_id)
     return data['data']
 
 
@@ -155,7 +161,9 @@ class GatewayClient:
         }
         try:
             await self.ws.send(json.dumps(message, ensure_ascii=False))
-        except Exception:
+            logger.info(f'上报网关成功：{self._describe_platform_message(payload)}')
+        except Exception as exc:
+            logger.warning(f'上报网关失败：{exc}')
             pass
 
     async def _handle_message(self, raw):
@@ -213,7 +221,9 @@ class GatewayClient:
             return
         await self._send_task_ack(task_id, task_type)
         try:
+            logger.info(f'收到网关任务：{self._describe_task(task_type, payload.get("payload") or {})}')
             result = await asyncio.to_thread(self._execute_task, task_type, payload.get('payload') or {})
+            logger.info(f'网关任务执行成功：{self._describe_task(task_type, payload.get("payload") or {})}')
             await self._send_task_result(task_id, task_type, True, 'success', result=result)
         except Exception as exc:
             logger.warning(f'插件任务执行失败：{task_type} {task_id} {exc}')
@@ -265,12 +275,18 @@ class GatewayClient:
 
     def _execute_task(self, task_type, payload):
         if task_type == 'task.xianyu.send_message':
-            return self._local_post('/api/reply', self._send_message_payload(payload))
+            data = self._send_message_payload(payload)
+            result = self._local_post('/api/reply', data)
+            text = data.get('text') or data.get('image_url') or ''
+            logger.info(f'发送消息给买家：toid={data.get("toid", "")} 内容={self._short_text(text)}')
+            return result
         if task_type == 'task.xianyu.get_order_detail':
             order_id = payload.get('orderId') or payload.get('order_id')
             if not order_id:
                 raise ValueError('payload.orderId不能为空')
-            return self._local_post('/api/order_detail', {'orderId': str(order_id)})
+            result = self._local_post('/api/order_detail', {'orderId': str(order_id)})
+            logger.info(f'查询订单详情完成：订单={order_id}')
+            return result
         if task_type == 'task.xianyu.adjust_price':
             order_id = payload.get('orderId') or payload.get('order_id')
             modify_fee = payload.get('modifyFee') or payload.get('modify_fee')
@@ -279,11 +295,13 @@ class GatewayClient:
                 new_transport_fee = payload.get('new_transport_fee', 0)
             if order_id is None or modify_fee is None:
                 raise ValueError('payload.orderId和payload.modifyFee不能为空')
-            return self._local_post('/api/adjust_price', {
+            result = self._local_post('/api/adjust_price', {
                 'orderId': str(order_id),
                 'modifyFee': str(modify_fee),
                 'newTransportFee': str(new_transport_fee),
             })
+            logger.info(f'订单改价完成：订单={order_id} 金额分={modify_fee}')
+            return result
         raise ValueError(f'不支持的任务类型：{task_type}')
 
     @staticmethod
@@ -321,3 +339,32 @@ class GatewayClient:
         if response.status_code >= 400:
             raise RuntimeError(str(body.get('error') or body))
         return body
+
+    @staticmethod
+    def _short_text(value, limit=80):
+        text = str(value or '').replace('\n', ' ').strip()
+        return text if len(text) <= limit else text[:limit] + '...'
+
+    def _describe_platform_message(self, payload):
+        content_type = int(payload.get('contentType') or 0)
+        buyer = payload.get('reminderTitle') or payload.get('buyerNick') or payload.get('senderUserId') or ''
+        if content_type == 1:
+            return f'文字 买家={buyer} 内容={self._short_text(payload.get("text"))}'
+        if content_type == 2:
+            return f'图片 买家={buyer} 地址={self._short_text(payload.get("url"), 60)}'
+        if content_type == 3:
+            return f'创建订单 买家={buyer} 订单={payload.get("orderId", "")}'
+        if content_type == 4:
+            return f'付款订单 买家={buyer} 订单={payload.get("orderId", "")}'
+        if content_type == 5:
+            return f'退款订单 买家={buyer} 订单={payload.get("orderId", "")}'
+        return f'类型={content_type} 买家={buyer}'
+
+    def _describe_task(self, task_type, payload):
+        if task_type == 'task.xianyu.send_message':
+            return f'发送消息 toid={payload.get("toid") or payload.get("buyerId") or ""} 内容={self._short_text(payload.get("text") or payload.get("imageUrl"))}'
+        if task_type == 'task.xianyu.get_order_detail':
+            return f'查询订单详情 订单={payload.get("orderId") or payload.get("order_id") or ""}'
+        if task_type == 'task.xianyu.adjust_price':
+            return f'修改订单价格 订单={payload.get("orderId") or payload.get("order_id") or ""} 金额分={payload.get("modifyFee") or payload.get("modify_fee") or ""}'
+        return task_type

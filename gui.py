@@ -28,7 +28,7 @@ def _check_chrome():
 # 内置监听配置，不再在界面上编辑
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 8000
-APP_VERSION = '1.0.0'
+APP_VERSION = '0.1.3'
 
 
 FRIENDLY_RULES = [
@@ -62,10 +62,28 @@ SUPPRESS_KEYWORDS = [
     'INFO', 'ERROR', 'WARNING', 'DEBUG',
 ]
 
+BUSINESS_LOG_KEYWORDS = [
+    '收到买家',
+    '收到新消息',
+    '上报网关',
+    '网关绑定成功',
+    '网关错误',
+    '收到网关任务',
+    '网关任务执行成功',
+    '插件任务执行失败',
+    '发送消息给买家',
+    '查询订单详情完成',
+    '订单改价完成',
+    '订单消息',
+]
+
 
 def friendly_line(message):
     """把技术日志翻译成小白提示，无法翻译的直接隐藏。"""
     text = str(message).strip()
+    for keyword in BUSINESS_LOG_KEYWORDS:
+        if keyword in text:
+            return text
     for key, friendly in FRIENDLY_RULES:
         if key in text:
             return friendly
@@ -143,7 +161,7 @@ class LoginView:
                  font=(UI_FONT, 11, 'bold')).pack(anchor='w')
         pwd_frame = tk.Frame(card, bg=C['surface'])
         pwd_frame.pack(fill='x', pady=(6, 22))
-        self.password_var = tk.StringVar()
+        self.password_var = tk.StringVar(value=config.get('password', ''))
         self.password_entry_wrap = self._make_entry(pwd_frame, self.password_var, show='*')
         self.password_entry_wrap.pack(fill='x', expand=True)
         self.password_entry = self.password_entry_wrap.entry
@@ -240,8 +258,9 @@ class XianyuDesktopApp:
         self._build_ui()
         self.root.after(100, self._poll_logs)
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
-        self._log('登录成功')
+        self._log(f'登录成功：{self._account_name()}')
         self._log(f'客户端就绪 v{APP_VERSION}，等待启动')
+        self._log(self._store_summary())
         self._update_ui()
 
     def _build_ui(self):
@@ -292,6 +311,25 @@ class XianyuDesktopApp:
         self.status_hint = tk.Label(run_left, text='等待启动', bg=C['surface'],
                                     fg=C['muted'], font=(UI_FONT, 12))
         self.status_hint.pack(anchor='w', pady=(6, 0))
+        self.account_text = tk.Label(
+            run_left,
+            text=f'子账号：{self._account_name()}',
+            bg=C['surface'],
+            fg=C['muted'],
+            font=(UI_FONT, 11),
+        )
+        self.account_text.pack(anchor='w', pady=(10, 0))
+        store_fg = C['danger'] if not self._store_ids() else C['green']
+        self.store_text = tk.Label(
+            run_left,
+            text=self._store_summary(),
+            bg=C['surface'],
+            fg=store_fg,
+            font=(UI_FONT, 11, 'bold'),
+            wraplength=460,
+            justify='left',
+        )
+        self.store_text.pack(anchor='w', pady=(4, 0))
 
         self.toggle_btn = tk.Button(
             run_zone, text='启动运行', command=self._toggle,
@@ -317,7 +355,7 @@ class XianyuDesktopApp:
         log_head = tk.Frame(log_panel, bg=C['surface'], height=46)
         log_head.pack(fill='x')
         log_head.pack_propagate(False)
-        tk.Label(log_head, text='运行日志', bg=C['surface'], fg=C['ink'],
+        tk.Label(log_head, text='业务日志', bg=C['surface'], fg=C['ink'],
                  font=(UI_FONT, 12, 'bold')).pack(side='left', padx=16)
         tk.Button(log_head, text='清空', command=self._clear_log,
                   bg=C['surface'], fg=C['muted'], activebackground=C['yellow_soft'],
@@ -332,6 +370,10 @@ class XianyuDesktopApp:
             highlightthickness=0,
         )
         self.log_text.tag_configure('time', foreground=C['muted'])
+        self.log_text.tag_configure('error', foreground=C['danger'])
+        self.log_text.tag_configure('send', foreground=C['green'])
+        self.log_text.tag_configure('receive', foreground='#2f6fb2')
+        self.log_text.tag_configure('order', foreground='#8a5a00')
         scrollbar = tk.Scrollbar(log_body, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
         self.log_text.pack(side='left', fill='both', expand=True)
@@ -365,6 +407,34 @@ class XianyuDesktopApp:
         value_label.pack(anchor='w', pady=(4, 0))
         return value_label
 
+    def _account_name(self):
+        user = self.gateway_auth.get('user') or {}
+        scope = self.gateway_auth.get('scope') or {}
+        return str(user.get('username') or scope.get('username') or '未知子账号')
+
+    def _store_ids(self):
+        scope = self.gateway_auth.get('scope') or {}
+        ids = scope.get('storeIds') or []
+        return [int(item) for item in ids if str(item).isdigit() and int(item) > 0]
+
+    def _store_summary(self):
+        scope = self.gateway_auth.get('scope') or {}
+        stores = scope.get('stores') or []
+        names = []
+        for store in stores:
+            name = str(store.get('storeName') or store.get('sellerNick') or '').strip()
+            sid = store.get('id')
+            if name:
+                names.append(f'{name}({sid})')
+            elif sid:
+                names.append(f'店铺 {sid}')
+        if names:
+            return '可用闲鱼店铺：' + '，'.join(names)
+        ids = self._store_ids()
+        if ids:
+            return '可用闲鱼店铺：' + '，'.join(str(item) for item in ids)
+        return '未绑定可用闲鱼店铺，请检查子账号所属商户和闲鱼店铺状态'
+
     def _log(self, message):
         self.log_queue.put(f'{time.strftime("%H:%M:%S")}|{message}')
 
@@ -379,14 +449,26 @@ class XianyuDesktopApp:
                 friendly = friendly_line(log_msg)
                 if friendly is None:
                     continue
+                tag = self._log_tag(friendly)
                 self.log_text.configure(state='normal')
                 self.log_text.insert('end', f'{log_time}  ', ('time',))
-                self.log_text.insert('end', f'{friendly}\n')
+                self.log_text.insert('end', f'{friendly}\n', (tag,))
                 self.log_text.see('end')
                 self.log_text.configure(state='disabled')
         except queue.Empty:
             pass
         self.root.after(100, self._poll_logs)
+
+    def _log_tag(self, message):
+        if '失败' in message or '错误' in message or '异常' in message:
+            return 'error'
+        if '发送' in message or '改价完成' in message:
+            return 'send'
+        if '收到' in message or '上报网关' in message:
+            return 'receive'
+        if '订单' in message:
+            return 'order'
+        return 'normal'
 
     def _clear_log(self):
         self.log_text.configure(state='normal')
