@@ -190,6 +190,14 @@ class XianyuLive:
             return True
         return isinstance(message.get('1'), (list, str))
 
+    def _is_self_message(self, message):
+        """闲鱼会把店铺发出的消息回显到同步流，不能再当作买家消息上报。"""
+        first = message.get('1') if isinstance(message, dict) else {}
+        reminder = first.get('10') if isinstance(first, dict) else {}
+        sender_id = str((reminder or {}).get('senderUserId') or '').split('@')[0]
+        current_id = str(self.myid or '').split('@')[0]
+        return bool(sender_id and current_id and sender_id == current_id)
+
     def _log_message_structure(self, data):
         """首次遇到某种消息结构时打印一次，便于定位真实聊天消息的字段。"""
         try:
@@ -956,6 +964,8 @@ class XianyuLive:
                 self._log_status_event_once(parsed)
                 continue
             if self._is_chat_message(parsed):
+                if self._is_self_message(parsed):
+                    continue
                 simplified = self._simplify_chat_message(parsed)
                 self._save_raw_message(simplified)
                 logger.info(f'收到买家消息：{self._describe_simplified_message(simplified)}')
