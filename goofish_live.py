@@ -400,7 +400,7 @@ class XianyuLive:
         self.access_token = access_token
         self.device_id = device_id or self.device_id
         self._device_id_from_store = True
-        required = ('unb', 'tracknick', '_m_h5_tk', 'cookie2', '_tb_token_')
+        required = ('unb', '_m_h5_tk', 'cookie2')
         missing = [name for name in required if not self.cookies.get(name)]
         if missing:
             logger.error(f'获取 cookie 不完整，缺少: {missing}')

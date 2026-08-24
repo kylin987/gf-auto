@@ -18,7 +18,9 @@ import websockets
 from utils.goofish_utils import generate_device_id
 
 LOGIN_URL = 'https://seller.goofish.com/'
-REQUIRED_COOKIES = {'unb', 'tracknick', '_m_h5_tk', 'cookie2', '_tb_token_'}
+# 登录态与 IM token 的必要条件。tracknick 只用于展示昵称，_tb_token_ 也并非所有
+# seller.goofish.com 登录态都会写入；实际 token 校验成功才是最终判定。
+REQUIRED_COOKIES = {'unb', '_m_h5_tk', 'cookie2'}
 
 
 def _free_port():
@@ -72,6 +74,23 @@ def _is_xianyu_cookie(cookie):
 
 def _cookies_to_string(cookies):
     return '; '.join(f"{c['name']}={c['value']}" for c in cookies)
+
+
+def _debugger_page_url(port):
+    """优先连接闲鱼卖家中心页面，避免误连 Chrome 的空白新标签页。"""
+    try:
+        targets = requests.get(f'http://127.0.0.1:{port}/json', timeout=2).json()
+    except Exception:
+        return ''
+
+    pages = [target for target in targets if target.get('type') == 'page' and target.get('webSocketDebuggerUrl')]
+    if not pages:
+        return ''
+    pages.sort(key=lambda target: (
+        'seller.goofish.com' not in str(target.get('url') or ''),
+        'goofish.com' not in str(target.get('url') or ''),
+    ))
+    return str(pages[0].get('webSocketDebuggerUrl') or '')
 
 
 def _run_in_new_loop(coro):
@@ -227,7 +246,8 @@ def fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=
     )
     Path(profile_dir).mkdir(parents=True, exist_ok=True)
     port = port or _free_port()
-    logger.info(f'正在打开 Chrome 并访问 {url}，请手动登录')
+    logger.info(f'正在打开 Chrome 并访问 {url}，请在该独立浏览器窗口完成登录')
+    logger.info(f'闲鱼 Chrome 独立登录目录: {profile_dir}')
     cmd = [
         chrome,
         f'--remote-debugging-port={port}',
@@ -240,24 +260,25 @@ def fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=
     process = subprocess.Popen(cmd)
     try:
         deadline = time.time() + timeout
-        ws_url = None
+        last_error = ''
         while time.time() < deadline:
-            try:
-                targets = requests.get(f'http://127.0.0.1:{port}/json', timeout=2).json()
-                for target in targets:
-                    if target.get('type') == 'page':
-                        ws_url = target.get('webSocketDebuggerUrl')
-                        break
-            except Exception:
-                pass
+            ws_url = _debugger_page_url(port)
             if ws_url:
-                break
+                # 登录页跳转时 page 级 CDP 连接会正常断开。短轮询后重新发现目标页面，
+                # 直到整体登录超时，而不是把一次跳转误报为 Chrome 登录失败。
+                attempt_deadline = min(deadline, time.time() + 15)
+                try:
+                    cookie_string, user_agent, access_token, device_id = _run_in_new_loop(
+                        _poll_login_cookies(ws_url, attempt_deadline)
+                    )
+                    logger.success('已获取登录 cookie')
+                    return cookie_string, user_agent, access_token, device_id
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.debug(f'等待闲鱼登录页面稳定，重新连接 Chrome: {last_error}')
             time.sleep(0.5)
-        if not ws_url:
-            raise TimeoutError('Chrome DevTools 未就绪')
-        cookie_string, user_agent, access_token, device_id = _run_in_new_loop(_poll_login_cookies(ws_url, deadline))
-        logger.success('已获取登录 cookie')
-        return cookie_string, user_agent, access_token, device_id
+        detail = f'，最后一次连接错误: {last_error}' if last_error else ''
+        raise TimeoutError('等待手动登录/获取 token 超时' + detail)
     finally:
         try:
             process.terminate()
