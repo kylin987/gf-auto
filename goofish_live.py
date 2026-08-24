@@ -688,9 +688,9 @@ class XianyuLive:
         if not toid:
             raise ValueError('缺少 toid')
         cid = str(payload.get('cid') or '').strip().split('@')[0]
-        if not cid:
+        if not cid and not payload.get('strict_cid'):
             cid = await self._find_conversation_id(self.ws, toid)
-        if not cid:
+        if not cid and not payload.get('strict_cid'):
             item_id = payload.get('item_id')
             if item_id:
                 cid = await self._create_chat_and_wait(self.ws, toid, item_id)
@@ -843,6 +843,8 @@ class XianyuLive:
             token=token,
             ws_url=ws_url,
             store_id=self.store_id or None,
+            instance_id=self.instance_id,
+            chrome_logged_in=lambda: bool(self.myid and self.check_login()),
             reply_url=f'http://{host}:{port}/api/reply',
             stop_event=self._stop_event,
         )
