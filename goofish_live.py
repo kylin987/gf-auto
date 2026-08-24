@@ -52,7 +52,9 @@ def _ws_connect(uri, headers=None):
 
 class XianyuLive:
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
-                 heartbeat_interval=None, gateway_auth=None, account_changed_callback=None):
+                 heartbeat_interval=None, gateway_auth=None, account_changed_callback=None,
+                 store_id=None, instance_id='', instance_name='', chrome_profile_dir=None,
+                 local_api_port=8000, log_dir=None):
         self.base_url = 'wss://wss-goofish.dingtalk.com/'
         self.cookies_str = cookies_str
         self.cookie_file = cookie_file or os.environ.get('XY_COOKIE_FILE') or default_cookie_file()
@@ -61,7 +63,12 @@ class XianyuLive:
         self.cookie_store = CookieStore(self.cookie_file)
         self.gateway_auth = gateway_auth or {}
         self.account_changed_callback = account_changed_callback
-        self.log_dir = os.environ.get('XY_LOG_DIR') or default_log_dir()
+        self.store_id = int(store_id or 0)
+        self.instance_id = str(instance_id or '')
+        self.instance_name = str(instance_name or '')
+        self.chrome_profile_dir = str(chrome_profile_dir or '')
+        self.local_api_port = int(local_api_port or 8000)
+        self.log_dir = log_dir or os.environ.get('XY_LOG_DIR') or default_log_dir()
         if cookies_str:
             self.cookies = trans_cookies(cookies_str)
             self.user_agent = UA
@@ -314,7 +321,10 @@ class XianyuLive:
             return False
         logger.info('需要登录闲鱼卖家中心，正在打开 Chrome')
         try:
-            cookies_str, user_agent, access_token, device_id = fetch_cookies_via_chrome(timeout=self.login_timeout)
+            cookies_str, user_agent, access_token, device_id = fetch_cookies_via_chrome(
+                timeout=self.login_timeout,
+                profile_dir=self.chrome_profile_dir or None,
+            )
         except Exception as exc:
             logger.exception(f'Chrome 登录失败: {exc}')
             return False
@@ -753,7 +763,7 @@ class XianyuLive:
         threading.Thread(target=self.user_alive, daemon=True, name='xianyu-heartbeat').start()
         self.loop = asyncio.get_running_loop()
         host = os.environ.get('XY_API_HOST', '127.0.0.1')
-        port = int(os.environ.get('XY_API_PORT', '8000'))
+        port = self.local_api_port
         try:
             self.start_local_api(host, port)
         except OSError as exc:
@@ -762,12 +772,10 @@ class XianyuLive:
         auth = self.gateway_auth or {}
         token = auth.get('accessToken') or os.environ.get('XY_GATEWAY_TOKEN') or ''
         ws_url = auth.get('wsUrl') or os.environ.get('XY_WS_URL') or None
-        store_ids = (auth.get('scope') or {}).get('storeIds') or []
-        store_id = store_ids[0] if store_ids else None
         self.ws_client = GatewayClient(
             token=token,
             ws_url=ws_url,
-            store_id=store_id,
+            store_id=self.store_id or None,
             reply_url=f'http://{host}:{port}/api/reply',
             stop_event=self._stop_event,
         )

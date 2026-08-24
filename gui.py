@@ -703,6 +703,7 @@ class XianyuDesktopApp:
 
 
 def main():
+    from dashboard import XianyuDesktopApp
     root = tk.Tk()
     LoginView(root, on_success=lambda auth: XianyuDesktopApp(root, gateway_auth=auth))
     root.mainloop()

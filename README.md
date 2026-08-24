@@ -106,7 +106,7 @@ python goofish_live.py
 python goofish_live.py --debug
 ```
 
-运行后除了连接 WebSocket 接收/回复消息，还会同时启动一个只监听本地的 HTTP 接口，默认地址 `127.0.0.1:8000`。可通过环境变量修改：
+命令行模式运行后除了连接 WebSocket 接收/回复消息，还会同时启动一个只监听本地的 HTTP 接口，默认地址 `127.0.0.1:8000`。可通过环境变量修改：
 
 - `XY_API_HOST`：默认 `127.0.0.1`
 - `XY_API_PORT`：默认 `8000`
@@ -221,11 +221,20 @@ GitHub Actions 需要配置仓库 Secrets：
 - `ALIYUN_OSS_ACCESS_KEY_ID`
 - `ALIYUN_OSS_ACCESS_KEY_SECRET`
 
-双击 Windows 的 `dist\XianYuApis\XianYuApis.exe` 会打开桌面启动器窗口，而不是命令行：
+桌面客户端会把数据保存在 `%LOCALAPPDATA%\yhs-fish-plugin`。升级安装包不会删除这里的登录态与店铺实例。
 
-1. 填写 `XY_API_HOST`（监听 IP）和 `XY_API_PORT`（监听端口）
-2. 点击“一键启动”，程序才开始登录并连接 WebSocket / 启动本地接口
-3. 窗口内的日志区域会实时显示登录、心跳、收消息和接口运行情况
+### 多店铺实例
+
+桌面客户端可以在一个窗口中管理多个闲鱼店铺实例。每个实例使用独立的 Cookie、Chrome Profile、消息连接、本地任务端口和日志目录。
+
+客户端启动实例前会校验 Chrome 闲鱼 ID 是否与后台授权店铺的 `platformShopId` 一致；不一致时不会上报消息，以避免串店。后台登录接口必须返回该字段。
+
+双击 Windows 的 `dist\XianYuApis\XianYuApis.exe` 会打开桌面工作台，而不是命令行：
+
+1. 使用影划算子账号登录
+2. 在“店铺实例”中添加已授权的闲鱼店铺
+3. 分别启动店铺实例，并在该实例的独立 Chrome 窗口中登录对应闲鱼店铺
+4. 在概览和实时事件中查看每个店铺的消息、网关任务、订单与异常
 
 需要命令行方式运行服务时，仍可使用 `python goofish_live.py`。
 

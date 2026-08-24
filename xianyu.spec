@@ -23,7 +23,7 @@ if node_bin.exists():
 
 hiddenimports = (
     collect_submodules('websockets')
-    + ['pydantic', 'typing_extensions', 'loguru']
+    + ['pydantic', 'typing_extensions', 'loguru', 'dashboard']
 )
 
 a = Analysis(
