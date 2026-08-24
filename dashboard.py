@@ -203,6 +203,7 @@ class XianyuDesktopApp:
         right.pack(side='left', fill='y')
         right.pack_propagate(False)
         self._panel_header(right, '店铺实例', lambda: self._navigate('stores'))
+        configured_store_ids = {int(store.get('storeId') or 0) for store in self.instances}
         for store in self.instances:
             item = tk.Frame(right, bg=C['surface'])
             item.pack(fill='x', padx=14, pady=9)
@@ -212,6 +213,17 @@ class XianyuDesktopApp:
                       anchor='w', bg=C['surface'], fg=C['red'] if current else C['ink'], bd=0, relief='flat',
                       cursor='hand2', font=(UI_FONT, 10, 'bold')).pack(side='left', fill='x', expand=True)
             tk.Label(item, text=status, bg=bg, fg=fg, font=(UI_FONT, 8, 'bold'), padx=5, pady=2).pack(side='right')
+        for store in self._authorized_stores():
+            if store['id'] in configured_store_ids:
+                continue
+            item = tk.Frame(right, bg=C['surface'])
+            item.pack(fill='x', padx=14, pady=9)
+            left = tk.Frame(item, bg=C['surface'])
+            left.pack(side='left', fill='x', expand=True)
+            tk.Label(left, text=store['storeName'] or f"闲鱼店铺 {store['id']}", bg=C['surface'], fg=C['ink'], font=(UI_FONT, 10, 'bold')).pack(anchor='w')
+            tk.Label(left, text='已授权，尚未配置登录态', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 8)).pack(anchor='w', pady=(3, 0))
+            tk.Button(item, text='添加', command=lambda value=store: self._add_instance(value), bg=C['red_soft'], fg=C['red'],
+                      bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 9, 'bold'), padx=7, pady=4).pack(side='right')
 
     def _navigate_button(self, key):
         for name, button in self.nav_buttons.items():
