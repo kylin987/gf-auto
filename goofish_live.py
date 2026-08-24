@@ -92,6 +92,10 @@ class XianyuLive:
         self._stop_event = threading.Event()
         self._relogin_lock = threading.Lock()
         self._seen_structures = set()
+        self._seen_protocol_frames = set()
+        self._seen_parse_failures = set()
+        self._seen_status_events = set()
+        self._last_sync_log_at = 0.0
         self._sync_ack_running = False
         self.ws_client = None
         self._ws_task = None
@@ -127,6 +131,44 @@ class XianyuLive:
             logger.info(f'聊天日志已写入 {file_path}')
         except Exception as exc:
             logger.warning(f'写入聊天日志失败: {exc}')
+
+    def _save_unparsed_message(self, raw):
+        """保留无法解析的本地原始包，避免在界面暴露用户消息正文。"""
+        try:
+            log_dir = Path(self.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_path = log_dir / f'unparsed_{time.strftime("%Y-%m-%d")}.jsonl'
+            with open(file_path, 'a', encoding='utf-8') as handle:
+                handle.write(json.dumps({'received_at': int(time.time()), 'raw': raw}, ensure_ascii=False) + '\n')
+        except Exception as exc:
+            logger.warning(f'保存未解析闲鱼消息失败: {exc}')
+
+    def _log_protocol_frame_once(self, message):
+        lwp = str(message.get('lwp') or '')
+        code = str(message.get('code') or '')
+        body = message.get('body')
+        shape = f'{lwp}|{code}|{type(body).__name__}'
+        if shape in self._seen_protocol_frames:
+            return
+        self._seen_protocol_frames.add(shape)
+        logger.info(f'闲鱼 WS 收到协议帧：lwp={lwp or "-"} code={code or "-"}')
+
+    def _log_parse_failure_once(self, raw):
+        raw_type = type(raw).__name__
+        raw_length = len(raw) if isinstance(raw, (str, bytes, list, dict)) else 0
+        shape = f'{raw_type}:{raw_length}'
+        if shape in self._seen_parse_failures:
+            return
+        self._seen_parse_failures.add(shape)
+        logger.warning(f'闲鱼消息解析失败：类型={raw_type} 长度={raw_length}，原始包已保存到本店日志')
+
+    def _log_status_event_once(self, data):
+        first = data.get('1') if isinstance(data, dict) else None
+        shape = f'{type(data).__name__}:{type(first).__name__}'
+        if shape in self._seen_status_events:
+            return
+        self._seen_status_events.add(shape)
+        logger.info('闲鱼收到状态类推送，非买家消息')
 
     @staticmethod
     def _is_chat_message(message):
@@ -177,7 +219,14 @@ class XianyuLive:
             try:
                 return json.loads(decrypt(raw))
             except Exception:
-                return None
+                pass
+        if isinstance(raw, str):
+            try:
+                padding = '=' * (-len(raw) % 4)
+                return json.loads(base64.b64decode(raw + padding).decode('utf-8'))
+            except Exception:
+                pass
+        return None
 
     @staticmethod
     def _simplify_chat_message(message):
@@ -875,25 +924,27 @@ class XianyuLive:
         try:
             package = message["body"]["syncPushPackage"]["data"]
         except Exception:
-            if message.get('lwp') not in ('/!', '/s/sync'):
-                logger.info('闲鱼 WS 收到非同步业务帧，等待后续解析')
+            self._log_protocol_frame_once(message)
             return
         if not isinstance(package, list):
             logger.warning('闲鱼同步推送格式异常，未得到消息列表')
             return
 
-        logger.info(f'闲鱼同步推送到达：{len(package)} 条')
+        if time.time() - self._last_sync_log_at >= 30:
+            self._last_sync_log_at = time.time()
+            logger.info(f'闲鱼同步推送到达：{len(package)} 条')
 
         for item in package:
             raw = item.get("data") if isinstance(item, dict) else item
             parsed = self._parse_sync_data(raw)
             if parsed is None:
-                logger.warning('闲鱼消息解析失败，未能识别内容')
-                continue
-            if self._is_status_event(parsed):
-                logger.info('闲鱼收到状态类推送，非买家消息')
+                self._save_unparsed_message(raw)
+                self._log_parse_failure_once(raw)
                 continue
             self._log_message_structure(parsed)
+            if self._is_status_event(parsed):
+                self._log_status_event_once(parsed)
+                continue
             if self._is_chat_message(parsed):
                 simplified = self._simplify_chat_message(parsed)
                 self._save_raw_message(simplified)

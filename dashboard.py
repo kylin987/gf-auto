@@ -43,6 +43,7 @@ class XianyuDesktopApp:
         self.lives = {}
         self.states = {}
         self.events = []
+        self.current_view = 'overview'
         self.log_queue = queue.Queue()
         self._sink_id = logger.add(self.log_queue.put, level='INFO', enqueue=True, format=self._format_log)
         self._sync_authorized_stores()
@@ -150,6 +151,7 @@ class XianyuDesktopApp:
         self.main.pack(side='left', fill='both', expand=True)
 
     def _navigate(self, view):
+        self.current_view = view
         for button in self.nav_buttons.values():
             button.configure(bg=C['nav'])
         if view in self.nav_buttons:
@@ -197,6 +199,7 @@ class XianyuDesktopApp:
         return {'status': 'not_logged', 'hint': '尚未登录该店铺的 Chrome', 'account': account}
 
     def _show_overview(self):
+        self.current_view = 'overview'
         self._clear_main()
         self._navigate_button('overview')
         account = self.gateway_auth.get('user') or {}
@@ -280,6 +283,7 @@ class XianyuDesktopApp:
         return text
 
     def _show_events(self):
+        self.current_view = 'events'
         self._clear_main()
         self._navigate_button('events')
         header = self._header('实时事件', '仅显示对业务有帮助的消息、任务、订单与异常')
@@ -290,6 +294,7 @@ class XianyuDesktopApp:
         self._render_log_widget(self.events_log, None)
 
     def _show_stores(self):
+        self.current_view = 'stores'
         self._clear_main()
         self._navigate_button('stores')
         header = self._header('店铺实例', '每个实例使用独立的 Cookie、Chrome Profile、连接与日志')
@@ -421,6 +426,7 @@ class XianyuDesktopApp:
         return '○ 未登录', C['gray_soft'], C['muted']
 
     def _show_update(self):
+        self.current_view = 'update'
         self._clear_main()
         self._navigate_button('update')
         self._header('软件更新', '检查、下载并安装最新客户端版本')
@@ -435,6 +441,7 @@ class XianyuDesktopApp:
                   bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 11, 'bold'), padx=18, pady=10).pack(anchor='w')
 
     def _show_settings(self):
+        self.current_view = 'settings'
         self._clear_main()
         self._navigate_button('settings')
         self._header('设置', '客户端设置将在后续版本逐步开放')
@@ -511,11 +518,16 @@ class XianyuDesktopApp:
             self._render_log_widget(self.events_log, None)
 
     def _refresh_current_view(self):
-        # 视图重建不会影响后台实例，只同步状态文本和统计数。
-        if hasattr(self, 'overview_log') and self.overview_log.winfo_exists():
+        if self.current_view == 'overview':
             self._show_overview()
-        elif hasattr(self, 'events_log') and self.events_log.winfo_exists():
+        elif self.current_view == 'events':
             self._show_events()
+        elif self.current_view == 'stores':
+            self._show_stores()
+        elif self.current_view == 'update':
+            self._show_update()
+        elif self.current_view == 'settings':
+            self._show_settings()
 
     def _clear_events(self):
         self.events = []
