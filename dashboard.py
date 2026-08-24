@@ -136,9 +136,13 @@ class XianyuDesktopApp:
             button.pack(fill='x', padx=11, pady=2)
             self.nav_buttons[key] = button
         tk.Label(self.nav, text='客户端', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=24, pady=(23, 0))
-        tk.Button(self.nav, text='更新与设置', command=self._start_update_check, anchor='w', padx=23, pady=10,
-                  bd=0, relief='flat', cursor='hand2', bg=C['nav'], fg='#ddd9d0', activebackground=C['red'],
-                  activeforeground='#fff', font=(UI_FONT, 11, 'bold')).pack(fill='x', padx=11, pady=2)
+        for key, label in [('update', '软件更新'), ('settings', '设置')]:
+            button = tk.Button(self.nav, text=label, command=lambda value=key: self._navigate(value),
+                               anchor='w', padx=23, pady=10, bd=0, relief='flat', cursor='hand2',
+                               bg=C['nav'], fg='#ddd9d0', activebackground=C['red'], activeforeground='#fff',
+                               font=(UI_FONT, 11, 'bold'))
+            button.pack(fill='x', padx=11, pady=2)
+            self.nav_buttons[key] = button
         account = self.gateway_auth.get('user') or {}
         tk.Label(self.nav, text=f"登录子账号\n{account.get('username') or '未知'}\n\nv{APP_VERSION}",
                  justify='left', anchor='w', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10)).pack(side='bottom', fill='x', padx=23, pady=22)
@@ -154,6 +158,10 @@ class XianyuDesktopApp:
             self._show_overview()
         elif view == 'stores':
             self._show_stores()
+        elif view == 'update':
+            self._show_update()
+        elif view == 'settings':
+            self._show_settings()
         else:
             self._show_events()
 
@@ -192,8 +200,6 @@ class XianyuDesktopApp:
         self._clear_main()
         self._navigate_button('overview')
         header = self._header('店铺概览', '当前运行状态与网关事件')
-        tk.Button(header, text='检查更新', command=self._start_update_check, bg=C['surface'], fg=C['red'], bd=0,
-                  relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold')).pack(side='right', padx=23)
         body = tk.Frame(self.main, bg=C['bg'])
         body.pack(fill='both', expand=True, padx=25, pady=23)
         instance = self._selected()
@@ -210,17 +216,11 @@ class XianyuDesktopApp:
         shop_id = account.get('userId') or instance.get('platformShopId') or '未绑定'
         nick = account.get('nick') or '等待连接 Chrome'
         tk.Label(info, text=f'Chrome 闲鱼：{nick}  ·  ID：{shop_id}', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(7, 0))
-        tag_text, tag_bg, tag_fg = self._status_style(state.get('status'))
-        tag = tk.Label(top, text=tag_text, bg=tag_bg, fg=tag_fg, padx=10, pady=5, font=(UI_FONT, 10, 'bold'))
-        tag.pack(side='right', padx=(8, 11))
-        action = '停止运行' if state.get('status') == 'running' else '启动运行'
-        tk.Button(top, text=action, command=lambda: self._toggle_instance(instance), bg=C['red'] if action == '启动运行' else C['ink'], fg='#fff',
-                  activebackground=C['red'], activeforeground='#fff', bd=0, relief='flat', padx=18, pady=10,
-                  cursor='hand2', font=(UI_FONT, 11, 'bold')).pack(side='right')
+        tk.Label(info, text=f'监听状态：{state.get("hint") or "未启动"}', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(4, 0))
         stats = tk.Frame(body, bg=C['bg'])
         stats.pack(fill='x', pady=14)
         events = [item for item in self.events if item.get('instanceId') == instance.get('id')]
-        for label, value, color in [('接收消息', sum(item['type'] == 'receive' for item in events), C['ink']), ('网关上报', sum(item['type'] == 'report' for item in events), C['green']), ('订单事件', sum(item['type'] == 'order' for item in events), C['gold']), ('待关注', sum(item['type'] == 'error' for item in events), C['red'])]:
+        for label, value, color in [('接收消息', sum(item['type'] == 'receive' for item in events), C['ink']), ('网关上报', sum(item['type'] == 'report' for item in events), C['green']), ('订单事件', sum(item['type'] == 'order' for item in events), C['gold'])]:
             card = tk.Frame(stats, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'], padx=15, pady=13)
             card.pack(side='left', fill='x', expand=True, padx=(0, 10))
             tk.Label(card, text=label, bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w')
@@ -297,22 +297,11 @@ class XianyuDesktopApp:
         self._clear_main()
         self._navigate_button('stores')
         header = self._header('店铺实例', '每个实例使用独立的 Cookie、Chrome Profile、连接与日志')
-        tk.Button(header, text='启动全部', command=self._start_all, bg=C['red'], fg='#fff', bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold'), padx=14, pady=8).pack(side='right', padx=23)
         body = tk.Frame(self.main, bg=C['bg'])
         body.pack(fill='both', expand=True, padx=25, pady=23)
-        configured = {int(item.get('storeId') or 0) for item in self.instances}
         for instance in self.instances:
             self._instance_row(body, instance, configured=True)
-        missing = [store for store in self._authorized_stores() if store['id'] not in configured]
-        if missing:
-            tk.Label(body, text='可添加的后台授权店铺', bg=C['bg'], fg=C['muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', pady=(22, 8))
-            for store in missing:
-                row = tk.Frame(body, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'], padx=18, pady=13)
-                row.pack(fill='x', pady=4)
-                tk.Label(row, text=store['storeName'] or f"闲鱼店铺 {store['id']}", bg=C['surface'], fg=C['ink'], font=(UI_FONT, 12, 'bold')).pack(side='left')
-                tk.Label(row, text=f"闲鱼 ID：{store['platformShopId'] or '网关未提供'}", bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(side='left', padx=14)
-                tk.Button(row, text='添加实例', command=lambda value=store: self._add_instance(value), bg=C['red_soft'], fg=C['red'], bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold'), padx=12, pady=6).pack(side='right')
-        if not self.instances and not missing:
+        if not self.instances:
             self._empty_state(body)
 
     def _instance_row(self, parent, instance, configured=True):
@@ -324,7 +313,7 @@ class XianyuDesktopApp:
         row.grid_columnconfigure(0, weight=1)
         status, bg, fg = self._status_style(state.get('status'))
         tk.Label(row, text=status, bg=bg, fg=fg, font=(UI_FONT, 9, 'bold'), padx=8, pady=4).grid(row=0, column=1, rowspan=2, padx=8)
-        toggle_text = '停止' if state.get('status') == 'running' else '启动'
+        toggle_text = '停止运行' if state.get('status') == 'running' else '启动'
         tk.Button(row, text=toggle_text, command=lambda item=instance: self._toggle_instance(item), bg=C['red'] if toggle_text == '启动' else C['ink'], fg='#fff', bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold'), padx=13, pady=7).grid(row=0, column=2, rowspan=2, padx=(3, 0))
         tk.Button(row, text='重新登录', command=lambda item=instance: self._force_relogin(item), bg=C['surface'], fg=C['red'], bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold')).grid(row=0, column=3, rowspan=2, padx=(8, 0))
 
@@ -349,12 +338,6 @@ class XianyuDesktopApp:
             self._stop_instance(instance)
         else:
             self._start_instance(instance)
-
-    def _start_all(self):
-        for instance in self.instances:
-            if self._state(instance).get('status') not in ('running', 'starting'):
-                self._start_instance(instance)
-        self._show_stores()
 
     def _start_instance(self, instance):
         if int(instance.get('storeId') or 0) <= 0:
@@ -430,7 +413,7 @@ class XianyuDesktopApp:
 
     def _status_style(self, status):
         if status == 'running':
-            return '● 正在监听', C['green_soft'], C['green']
+            return '● 运行中', C['green_soft'], C['green']
         if status == 'starting':
             return '● 正在启动', C['gold_soft'], C['gold']
         if status == 'ready':
@@ -438,8 +421,30 @@ class XianyuDesktopApp:
         if status == 'mismatch':
             return '● 登录店铺不一致', C['red_soft'], C['red']
         if status == 'error':
-            return '● 需要处理', C['red_soft'], C['red']
+            return '● 启动失败', C['red_soft'], C['red']
         return '○ 未登录', C['gray_soft'], C['muted']
+
+    def _show_update(self):
+        self._clear_main()
+        self._navigate_button('update')
+        self._header('软件更新', '检查、下载并安装最新客户端版本')
+        body = tk.Frame(self.main, bg=C['bg'])
+        body.pack(fill='both', expand=True, padx=25, pady=23)
+        card = tk.Frame(body, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'], padx=24, pady=22)
+        card.pack(fill='x')
+        tk.Label(card, text='影划算店铺插件', bg=C['surface'], fg=C['ink'], font=(UI_FONT, 18, 'bold')).pack(anchor='w')
+        tk.Label(card, text=f'当前版本：v{APP_VERSION}', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 11)).pack(anchor='w', pady=(9, 0))
+        tk.Label(card, text='更新会下载经校验的 Windows 安装包，现有店铺 Cookie 与配置会被保留。', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(5, 17))
+        tk.Button(card, text='检查更新', command=self._start_update_check, bg=C['red'], fg='#fff', activebackground=C['red'], activeforeground='#fff',
+                  bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 11, 'bold'), padx=18, pady=10).pack(anchor='w')
+
+    def _show_settings(self):
+        self._clear_main()
+        self._navigate_button('settings')
+        self._header('设置', '客户端设置将在后续版本逐步开放')
+        body = tk.Frame(self.main, bg=C['bg'])
+        body.pack(fill='both', expand=True, padx=25, pady=23)
+        tk.Label(body, text='暂无可配置项', bg=C['bg'], fg=C['muted'], font=(UI_FONT, 12)).pack(anchor='w', pady=(28, 0))
 
     def _event(self, instance, kind, text):
         self.events.append({'time': time.strftime('%H:%M:%S'), 'instanceId': instance.get('id'), 'store': instance.get('name') or '', 'type': kind, 'text': str(text)})
