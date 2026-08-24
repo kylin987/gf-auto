@@ -68,6 +68,8 @@ def _run_js(expression, raw=False):
             [get_node_bin(), path],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             timeout=30,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
         )

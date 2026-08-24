@@ -153,14 +153,17 @@ class XianyuLive:
         self._seen_protocol_frames.add(shape)
         logger.info(f'闲鱼 WS 收到协议帧：lwp={lwp or "-"} code={code or "-"}')
 
-    def _log_parse_failure_once(self, raw):
+    def _log_parse_failure_once(self, raw, reason=''):
         raw_type = type(raw).__name__
         raw_length = len(raw) if isinstance(raw, (str, bytes, list, dict)) else 0
-        shape = f'{raw_type}:{raw_length}'
+        detail = str(reason or '未知原因').replace('\n', ' ').strip()[:160]
+        shape = f'{raw_type}:{raw_length}:{detail}'
         if shape in self._seen_parse_failures:
             return
         self._seen_parse_failures.add(shape)
-        logger.warning(f'闲鱼消息解析失败：类型={raw_type} 长度={raw_length}，原始包已保存到本店日志')
+        logger.warning(
+            f'闲鱼消息解析失败：类型={raw_type} 长度={raw_length} 原因={detail}，原始包已保存到本店日志'
+        )
 
     def _log_status_event_once(self, data):
         first = data.get('1') if isinstance(data, dict) else None
@@ -209,23 +212,30 @@ class XianyuLive:
             pass
 
     def _parse_sync_data(self, raw):
+        self._last_parse_error = ''
         if raw is None:
+            self._last_parse_error = '消息为空'
             return None
         if isinstance(raw, (dict, list)):
             return raw
         try:
             return json.loads(raw)
-        except Exception:
+        except Exception as json_exc:
             try:
                 return json.loads(decrypt(raw))
-            except Exception:
-                pass
+            except Exception as decrypt_exc:
+                self._last_parse_error = (
+                    f'Node 解码失败：{type(decrypt_exc).__name__}: {str(decrypt_exc)[:120]}'
+                )
         if isinstance(raw, str):
             try:
                 padding = '=' * (-len(raw) % 4)
                 return json.loads(base64.b64decode(raw + padding).decode('utf-8'))
-            except Exception:
-                pass
+            except Exception as base64_exc:
+                if not self._last_parse_error:
+                    self._last_parse_error = (
+                        f'JSON/Base64 解析失败：{type(json_exc).__name__}/{type(base64_exc).__name__}'
+                    )
         return None
 
     @staticmethod
@@ -939,7 +949,7 @@ class XianyuLive:
             parsed = self._parse_sync_data(raw)
             if parsed is None:
                 self._save_unparsed_message(raw)
-                self._log_parse_failure_once(raw)
+                self._log_parse_failure_once(raw, self._last_parse_error)
                 continue
             self._log_message_structure(parsed)
             if self._is_status_event(parsed):
