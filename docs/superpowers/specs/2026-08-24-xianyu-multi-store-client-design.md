@@ -6,12 +6,13 @@
 
 ## 店铺绑定
 
-网关登录返回授权店铺列表，店铺字段至少包括：`id`、`storeName`、`sellerNick`、`platformShopId`。
+网关登录返回该 pub 的闲鱼店铺列表，店铺字段至少包括：`id`、`storeName`、`sellerNick`、`platformShopId`。客户端必须展示全部店铺，不以是否已登录 Chrome 作为展示条件。
 
 实例启动前读取对应 Cookie 的闲鱼 `userId`，必须与已选择店铺的 `platformShopId` 完全一致：
 
-- 匹配：启动闲鱼消息连接与网关 WS，并在所有事件中携带该 `storeId`。
+- 匹配且用户启动实例：启动闲鱼消息连接与网关 WS，并在所有事件中携带该 `storeId`。
 - 无匹配：拒绝启动和上报，界面展示明确的店铺不一致原因。
+- 未登录 Chrome：保留店铺实例并显示“未登录”，不建立业务连接。
 - Cookie 失效：只停止当前实例，其他实例继续运行。
 
 历史单店 `cookies.json` 自动迁移为默认实例，确保已运行用户升级后不需要重新配置。

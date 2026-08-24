@@ -95,15 +95,22 @@ class XianyuDesktopApp:
                     })
                     changed = True
                 continue
-            if len(stores) == 1 and int(instance.get('storeId') or 0) == 0:
-                store = stores[0]
-                if int(instance.get('storeId') or 0) == 0:
-                    instance.update({
-                        'storeId': store['id'], 'storeName': store['storeName'],
-                        'name': store['storeName'] or instance.get('name') or '闲鱼店铺',
-                        'platformShopId': store['platformShopId'],
-                    })
+            stored_id = int(instance.get('storeId') or 0)
+            stored = next((store for store in stores if store['id'] == stored_id), None)
+            if stored:
+                refreshed = {
+                    'storeName': stored['storeName'],
+                    'name': stored['storeName'] or instance.get('name') or '闲鱼店铺',
+                    'platformShopId': stored['platformShopId'],
+                }
+                if any(instance.get(key) != value for key, value in refreshed.items()):
+                    instance.update(refreshed)
                     changed = True
+        configured_ids = {int(instance.get('storeId') or 0) for instance in self.instances}
+        for store in stores:
+            if store['id'] not in configured_ids:
+                self.instances.append(new_instance(store))
+                changed = True
         if changed:
             save_instances(self.instances)
 
@@ -169,7 +176,17 @@ class XianyuDesktopApp:
         return next((item for item in self.instances if item.get('id') == self.selected_id), None)
 
     def _state(self, instance):
-        return self.states.get(instance.get('id'), {'status': 'stopped', 'hint': '尚未启动', 'account': {}})
+        state = self.states.get(instance.get('id'))
+        if state and state.get('status') in ('starting', 'running', 'error'):
+            return state
+        account = chrome_account_from_cookie_file(instance_cookie_file(instance['id']))
+        actual = str(account.get('userId') or '')
+        expected = str(instance.get('platformShopId') or '')
+        if actual and expected and actual == expected:
+            return {'status': 'ready', 'hint': 'Chrome 登录店铺已匹配', 'account': account}
+        if actual and expected:
+            return {'status': 'mismatch', 'hint': 'Chrome 登录店铺与后台店铺不一致', 'account': account}
+        return {'status': 'not_logged', 'hint': '尚未登录该店铺的 Chrome', 'account': account}
 
     def _show_overview(self):
         self._clear_main()
@@ -335,7 +352,7 @@ class XianyuDesktopApp:
 
     def _start_all(self):
         for instance in self.instances:
-            if self._state(instance).get('status') == 'stopped':
+            if self._state(instance).get('status') not in ('running', 'starting'):
                 self._start_instance(instance)
         self._show_stores()
 
@@ -416,9 +433,13 @@ class XianyuDesktopApp:
             return '● 正在监听', C['green_soft'], C['green']
         if status == 'starting':
             return '● 正在启动', C['gold_soft'], C['gold']
+        if status == 'ready':
+            return '● Chrome 已登录', C['green_soft'], C['green']
+        if status == 'mismatch':
+            return '● 登录店铺不一致', C['red_soft'], C['red']
         if status == 'error':
             return '● 需要处理', C['red_soft'], C['red']
-        return '● 未启动', C['gray_soft'], C['muted']
+        return '○ 未登录', C['gray_soft'], C['muted']
 
     def _event(self, instance, kind, text):
         self.events.append({'time': time.strftime('%H:%M:%S'), 'instanceId': instance.get('id'), 'store': instance.get('name') or '', 'type': kind, 'text': str(text)})
