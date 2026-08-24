@@ -44,6 +44,7 @@ New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 $escapedClientDir = Escape-NsisString -Value ((Resolve-Path $ClientDir).Path)
 $escapedInstaller = Escape-NsisString -Value $installerPath
+$escapedAppIcon = Escape-NsisString -Value ((Resolve-Path (Join-Path $repoRoot "assets\brand\fish-app-icon.ico")).Path)
 
 $nsi = @"
 Unicode true
@@ -56,6 +57,8 @@ ShowInstDetails show
 BrandingText "yhs-fish-plugin $tag"
 !define APP_EXE "XianYuApis.exe"
 !define CLIENT_DIR "$escapedClientDir"
+!define APP_ICON "$escapedAppIcon"
+Icon "`${APP_ICON}"
 
 Page directory
 Page instfiles
@@ -66,8 +69,8 @@ Section "Install"
   SetOutPath "`$INSTDIR"
   File /r "`${CLIENT_DIR}\*.*"
   CreateDirectory "`$SMPROGRAMS\yhs-fish-plugin"
-  CreateShortcut "`$DESKTOP\yhs-fish-plugin.lnk" "`$INSTDIR\`${APP_EXE}" "" "`$INSTDIR\`${APP_EXE}" 0
-  CreateShortcut "`$SMPROGRAMS\yhs-fish-plugin\yhs-fish-plugin.lnk" "`$INSTDIR\`${APP_EXE}" "" "`$INSTDIR\`${APP_EXE}" 0
+  CreateShortcut "`$DESKTOP\yhs-fish-plugin.lnk" "`$INSTDIR\`${APP_EXE}" "" "`$INSTDIR\_internal\assets\brand\fish-app-icon.ico" 0
+  CreateShortcut "`$SMPROGRAMS\yhs-fish-plugin\yhs-fish-plugin.lnk" "`$INSTDIR\`${APP_EXE}" "" "`$INSTDIR\_internal\assets\brand\fish-app-icon.ico" 0
   Exec '"`$INSTDIR\`${APP_EXE}"'
 SectionEnd
 "@
