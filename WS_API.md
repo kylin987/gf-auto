@@ -9,7 +9,7 @@
     │
     ▼
 gf-auto 本地监听
-    │ 上报 contentType=1 / 2 / 3 / 4 / 5
+    │ 上报 contentType=1 / 2 / 3 / 4 / 5 / 6
     ▼
 yhs-plugin-gateway
     │ 转发 yhs-bus，按 bus 任务下发回复、查订单、改价
@@ -148,6 +148,7 @@ wss://plugin-gateway.yinghuasuan.com/ws
 - `3`：用户已拍下，待付款。
 - `4`：用户已付款，待发货。
 - `5`：用户发起退款。
+- `6`：用户关闭未付款订单。
 
 订单消息需要尽量带上 `orderId/cid/senderUserId/reminderTitle/itemId/time`，其中 `orderId` 是后续改价、查详情和建单的关键字段。
 
@@ -160,8 +161,9 @@ wss://plugin-gateway.yinghuasuan.com/ws
 | `3` | 用户已拍下，待付款 | 是 |
 | `4` | 用户已付款，待发货 | 是 |
 | `5` | 用户发起退款 | 是 |
+| `6` | 用户关闭未付款订单 | 是 |
 
-闲鱼原始订单卡片消息的 `contentType=26`，客户端会映射为 `3/4/5` 后上报网关。
+闲鱼原始订单卡片消息的 `contentType=26`，客户端会映射为 `3/4/5` 后上报网关。订单关闭系统通知通常为原始 `contentType=14/28`，客户端映射为 `6`；通知未带订单号时，仅使用同会话最近收到的订单号作为兜底。
 
 ## 7. 网关 ACK
 

@@ -95,6 +95,7 @@ class XianyuLive:
         self._seen_protocol_frames = set()
         self._seen_parse_failures = set()
         self._seen_status_events = set()
+        self._recent_order_ids_by_cid = {}
         self._last_sync_log_at = 0.0
         self._sync_ack_running = False
         self.ws_client = None
@@ -247,8 +248,38 @@ class XianyuLive:
         return None
 
     @staticmethod
+    def _extract_order_id(reminder, inner_data):
+        order_id = ''
+        try:
+            ext_json = reminder.get('extJson')
+            if isinstance(ext_json, str):
+                ext_json = json.loads(ext_json)
+            update_key = str((ext_json or {}).get('updateKey') or '')
+            parts = update_key.split(':')
+            if len(parts) >= 2 and parts[1]:
+                order_id = parts[1]
+        except Exception:
+            pass
+        if order_id or not inner_data:
+            return order_id
+        try:
+            main = ((inner_data.get('dxCard') or {}).get('item') or {}).get('main') or {}
+            targets = [str(main.get('targetUrl') or '')]
+            button = (main.get('exContent') or {}).get('button') or {}
+            if button.get('targetUrl'):
+                targets.append(str(button.get('targetUrl') or ''))
+            for target in targets:
+                target_query = parse_qs(urlparse(target).query)
+                for key in ('bizOrderId', 'orderId', 'id'):
+                    if target_query.get(key):
+                        return target_query[key][0]
+        except Exception:
+            pass
+        return ''
+
+    @staticmethod
     def _simplify_chat_message(message):
-        """精简聊天消息：1 文本 / 2 图片 / 3 已拍下 / 4 已付款 / 5 退款。"""
+        """精简聊天消息：1 文本 / 2 图片 / 3 已拍下 / 4 已付款 / 5 退款 / 6 关闭。"""
         first = message.get('1') or {}
         content = (first.get('6') or {}).get('3') or {}
         reminder = first.get('10') or {}
@@ -277,37 +308,10 @@ class XianyuLive:
             except Exception:
                 inner_data = None
 
+        order_id = XianyuLive._extract_order_id(reminder, inner_data)
+
         # 订单卡片消息：原 contentType=26，映射为 3 已拍下 / 4 已付款 / 5 退款
         if content_type == 26:
-            order_id = ''
-            try:
-                ext_json = reminder.get('extJson')
-                if isinstance(ext_json, str):
-                    ext_json = json.loads(ext_json)
-                update_key = str((ext_json or {}).get('updateKey') or '')
-                parts = update_key.split(':')
-                if len(parts) >= 2 and parts[1]:
-                    order_id = parts[1]
-            except Exception:
-                pass
-            if not order_id and inner_data:
-                try:
-                    main = ((inner_data.get('dxCard') or {}).get('item') or {}).get('main') or {}
-                    targets = [str(main.get('targetUrl') or '')]
-                    button = (main.get('exContent') or {}).get('button') or {}
-                    if button.get('targetUrl'):
-                        targets.append(str(button.get('targetUrl') or ''))
-                    for target in targets:
-                        target_query = parse_qs(urlparse(target).query)
-                        for key in ('bizOrderId', 'orderId', 'id'):
-                            if target_query.get(key):
-                                order_id = target_query[key][0]
-                                break
-                        if order_id:
-                            break
-                except Exception:
-                    pass
-
             order_type = 3
             card_text = str(reminder.get('reminderContent') or '')
             if '已付款' in card_text or '等待你发货' in card_text:
@@ -343,6 +347,19 @@ class XianyuLive:
                         height = 0
             elif content_type == 1:
                 text = str(((inner_data.get('text') or {}).get('text')) or '')
+
+        system_text = str(reminder.get('reminderContent') or text or '')
+        if content_type in (14, 28) and '关闭' in system_text and '订单' in system_text:
+            return {
+                'contentType': 6,
+                'cid': cid,
+                'senderUserId': sender_user_id,
+                'reminderTitle': reminder_title,
+                'orderId': order_id,
+                'text': system_text,
+                'time': time_str,
+                'itemId': item_id,
+            }
 
         return {
             'contentType': content_type,
@@ -971,7 +988,14 @@ class XianyuLive:
                 simplified = self._simplify_chat_message(parsed)
                 self._save_raw_message(simplified)
                 logger.info(f'收到买家消息：{self._describe_simplified_message(simplified)}')
-                if simplified.get('contentType') in (1, 2, 3, 4, 5) and self.ws_client is not None:
+                content_type = int(simplified.get('contentType') or 0)
+                cid = str(simplified.get('cid') or '')
+                order_id = str(simplified.get('orderId') or '')
+                if content_type in (3, 4, 5) and cid and order_id:
+                    self._recent_order_ids_by_cid[cid] = order_id
+                elif content_type == 6 and not order_id and cid:
+                    simplified['orderId'] = self._recent_order_ids_by_cid.get(cid, '')
+                if content_type in (1, 2, 3, 4, 5, 6) and self.ws_client is not None:
                     await self.ws_client.send(simplified)
             else:
                 self._save_raw_message(parsed)
@@ -1019,6 +1043,8 @@ class XianyuLive:
             return f'付款订单 买家={buyer} 订单={data.get("orderId", "")}'
         if content_type == 5:
             return f'退款订单 买家={buyer} 订单={data.get("orderId", "")}'
+        if content_type == 6:
+            return f'关闭订单 买家={buyer} 订单={data.get("orderId", "")}'
         return f'类型={content_type} 买家={buyer}'
 
 
