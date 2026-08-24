@@ -3,10 +3,12 @@ import json
 import os
 import uuid
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 import requests
 from loguru import logger
+from PIL import Image
 import websockets
 
 GATEWAY_LOGIN_URL = 'https://plugin-gateway.yinghuasuan.com/api/v1/client/login'
@@ -340,7 +342,7 @@ class GatewayClient:
                 results.append({'messageKey': message_key, 'status': 'skipped', 'attemptId': claim.get('attemptId')})
                 continue
             try:
-                data = self._send_message_payload(dict(payload, **message))
+                data = await asyncio.to_thread(self._send_message_payload, dict(payload, **message))
                 data['strict_cid'] = True
                 result = await asyncio.to_thread(self._local_post, '/api/reply', data)
                 await self._send_task_message_result(task_id, message_key, claim, generation, True, result=result)
@@ -404,8 +406,7 @@ class GatewayClient:
             return result
         raise ValueError(f'不支持的任务类型：{task_type}')
 
-    @staticmethod
-    def _send_message_payload(payload):
+    def _send_message_payload(self, payload):
         toid = payload.get('toid') or payload.get('buyerId') or payload.get('senderUserId')
         if not toid:
             raise ValueError('payload.toid不能为空')
@@ -416,10 +417,15 @@ class GatewayClient:
         }
         image_url = payload.get('imageUrl') or payload.get('image_url')
         if image_url:
+            width, height = self._image_size(
+                str(image_url),
+                int(payload.get('width') or 0),
+                int(payload.get('height') or 0),
+            )
             data.update({
                 'image_url': str(image_url),
-                'width': int(payload.get('width') or 0),
-                'height': int(payload.get('height') or 0),
+                'width': width,
+                'height': height,
             })
             return data
         text = payload.get('text')
@@ -429,6 +435,21 @@ class GatewayClient:
             raise ValueError('payload.text不能为空')
         data['text'] = str(text)
         return data
+
+    @staticmethod
+    def _image_size(image_url, width=0, height=0):
+        if width > 0 and height > 0:
+            return width, height
+        try:
+            response = requests.get(image_url, timeout=10)
+            response.raise_for_status()
+            with Image.open(BytesIO(response.content)) as image:
+                image_width, image_height = image.size
+                if image_width > 0 and image_height > 0:
+                    return image_width, image_height
+        except Exception as exc:
+            logger.warning(f'获取图片尺寸失败，将使用默认尺寸：{exc}')
+        return width or 512, height or 512
 
     def _local_post(self, path, payload):
         response = requests.post(self.api_base_url + path, json=payload, timeout=30)
