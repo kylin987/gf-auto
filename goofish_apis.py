@@ -315,10 +315,55 @@ class XianyuApis:
         self.item_detail_url = 'https://h5api.m.goofish.com/h5/mtop.taobao.idle.pc.detail/1.0/'
         self.reset_login_info_url = 'https://passport.goofish.com/newlogin/hasLogin.do'
         self.session = requests.Session()
-        self.session.cookies.update(cookies)
+        self._seed_cookies(cookies)
         self.device_id = device_id
         self.user_agent = user_agent
         self.cookies = {}
+
+    def _seed_cookies(self, cookies):
+        """持久化 Cookie 没有域信息，显式绑定到闲鱼主域，避免生成空域重复项。"""
+        for name, value in (cookies or {}).items():
+            if name and value:
+                self.session.cookies.set(str(name), str(value), domain='.goofish.com', path='/')
+
+    def _cookie_value(self, name):
+        """CookieJar 允许同名不同域，不能直接用 jar[name] 读取。"""
+        candidates = [cookie for cookie in self.session.cookies if cookie.name == name and cookie.value]
+        if not candidates:
+            return ''
+
+        def priority(cookie):
+            domain = (cookie.domain or '').lstrip('.').lower()
+            if domain == 'h5api.m.goofish.com':
+                rank = 0
+            elif domain.endswith('goofish.com'):
+                rank = 1
+            elif domain == '':
+                rank = 2
+            else:
+                rank = 3
+            return rank, -(int(cookie.expires or 0))
+
+        return str(sorted(candidates, key=priority)[0].value)
+
+    def _normalize_response_cookies(self, response):
+        """接口刷新同名 Cookie 时以最新响应为准，避免后续请求携带两份 token。"""
+        latest = {}
+        for cookie in response.cookies:
+            if cookie.name and cookie.value:
+                latest[cookie.name] = cookie
+        for name, cookie in latest.items():
+            for existing in list(self.session.cookies):
+                if existing.name == name:
+                    self.session.cookies.clear(domain=existing.domain, path=existing.path, name=existing.name)
+            self.session.cookies.set(
+                cookie.name,
+                cookie.value,
+                domain=cookie.domain or '.goofish.com',
+                path=cookie.path or '/',
+                secure=bool(cookie.secure),
+                expires=cookie.expires,
+            )
 
     def get_token(self, retried=False):
         headers = {
@@ -357,16 +402,11 @@ class XianyuApis:
         data = {
             'data': data_val,
         }
-        token = self.session.cookies['_m_h5_tk'].split('_')[0]
+        token = self._cookie_value('_m_h5_tk').split('_')[0]
         sign = generate_sign(params['t'], token, data_val)
         params['sign'] = sign
         response = self.session.post(self.login_url, params=params, headers=headers, data=data)
-        for response_cookie_key in response.cookies.get_dict().keys():
-            if response_cookie_key in self.session.cookies.get_dict().keys():
-                for key in self.session.cookies:
-                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
-                        self.session.cookies.clear(domain=key.domain, path=key.path, name=key.name)
-                        break
+        self._normalize_response_cookies(response)
         res_json = response.json()
         if 'ret' in res_json and '令牌过期' in res_json['ret'][0]:
             if not retried:
@@ -411,16 +451,11 @@ class XianyuApis:
         data = {
             'data': data_val,
         }
-        token = self.session.cookies['_m_h5_tk'].split('_')[0]
+        token = self._cookie_value('_m_h5_tk').split('_')[0]
         sign = generate_sign(params['t'], token, data_val)
         params['sign'] = sign
         response = self.session.post(self.refresh_token_url, headers=headers, params=params, data=data)
-        for response_cookie_key in response.cookies:
-            if response_cookie_key in self.session.cookies:
-                for key in self.session.cookies:
-                    if key.name == response_cookie_key and key.domain == '' and key.path == '/':
-                        del self.session.cookies[key]
-                        break
+        self._normalize_response_cookies(response)
         res_json = response.json()
         return res_json
 
@@ -477,7 +512,7 @@ class XianyuApis:
         data = {
             'data': data_val,
         }
-        token = self.session.cookies.get('_m_h5_tk', '').split('_')[0]
+        token = self._cookie_value('_m_h5_tk').split('_')[0]
         sign = generate_sign(params['t'], token, data_val)
         params['sign'] = sign
         response = self.session.post(self.item_detail_url, params=params, data=data)
@@ -503,7 +538,7 @@ class XianyuApis:
         }
         if value_type:
             params['valueType'] = value_type
-        token = self.session.cookies.get('_m_h5_tk', '').split('_')[0]
+        token = self._cookie_value('_m_h5_tk').split('_')[0]
         params['sign'] = generate_mtop_sign(token, params['t'], params['appKey'], data_val)
         headers = {
             'Accept': 'application/json',
@@ -624,7 +659,7 @@ class XianyuApis:
         data = {
             "data": data_val
         }
-        token = self.session.cookies.get('_m_h5_tk', '').split('_')[0]
+        token = self._cookie_value('_m_h5_tk').split('_')[0]
         sign = generate_sign(params['t'], token, data_val)
         params['sign'] = sign
         response = self.session.post(url, headers=headers, params=params, data=data)
@@ -671,7 +706,7 @@ class XianyuApis:
         data = {
             "data": data_val
         }
-        token = self.session.cookies.get('_m_h5_tk', '').split('_')[0]
+        token = self._cookie_value('_m_h5_tk').split('_')[0]
         sign = generate_sign(params['t'], token, data_val)
         params['sign'] = sign
         response = self.session.post(url, headers=headers, params=params, data=data)
@@ -842,7 +877,7 @@ class XianyuApis:
         data = {
             "data": data_val
         }
-        token = self.session.cookies.get('_m_h5_tk', '').split('_')[0]
+        token = self._cookie_value('_m_h5_tk').split('_')[0]
         sign = generate_sign(params['t'], token, data_val)
         params['sign'] = sign
         response = self.session.post(url, headers=headers, params=params, data=data)
