@@ -6,10 +6,11 @@ import time
 import os
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from loguru import logger
 import websockets
+from app_paths import default_cookie_file, default_log_dir
 from goofish_apis import XianyuApis, UA
 
 from utils.goofish_utils import generate_mid, generate_uuid, trans_cookies, generate_device_id, decrypt, \
@@ -51,15 +52,16 @@ def _ws_connect(uri, headers=None):
 
 class XianyuLive:
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
-                 heartbeat_interval=None, gateway_auth=None):
+                 heartbeat_interval=None, gateway_auth=None, account_changed_callback=None):
         self.base_url = 'wss://wss-goofish.dingtalk.com/'
         self.cookies_str = cookies_str
-        self.cookie_file = cookie_file or os.environ.get('XY_COOKIE_FILE', 'cookies.json')
+        self.cookie_file = cookie_file or os.environ.get('XY_COOKIE_FILE') or default_cookie_file()
         self.login_timeout = login_timeout or int(os.environ.get('XY_LOGIN_TIMEOUT', '300'))
         self.heartbeat_interval = heartbeat_interval or int(os.environ.get('XY_HEARTBEAT_INTERVAL', '600'))
         self.cookie_store = CookieStore(self.cookie_file)
         self.gateway_auth = gateway_auth or {}
-        self.log_dir = os.environ.get('XY_LOG_DIR', 'log')
+        self.account_changed_callback = account_changed_callback
+        self.log_dir = os.environ.get('XY_LOG_DIR') or default_log_dir()
         if cookies_str:
             self.cookies = trans_cookies(cookies_str)
             self.user_agent = UA
@@ -91,6 +93,20 @@ class XianyuLive:
 
     def save_cookies(self):
         self.cookie_store.save(self.cookies, self.user_agent, self.access_token, self.device_id)
+
+    def current_chrome_account(self):
+        return {
+            'nick': unquote(str(self.cookies.get('tracknick') or '')).strip(),
+            'userId': str(self.cookies.get('unb') or '').strip(),
+        }
+
+    def _notify_chrome_account(self):
+        if not callable(self.account_changed_callback):
+            return
+        try:
+            self.account_changed_callback(self.current_chrome_account())
+        except Exception:
+            pass
 
     def _save_raw_message(self, message):
         """把聊天消息的原始 JSON 按天写入 log/chat_YYYY-MM-DD.jsonl。"""
@@ -290,6 +306,7 @@ class XianyuLive:
         """优先使用本地保存的 cookie，失效时打开 Chrome 手动登录并自动保存。"""
         if not force and self.cookies and self.access_token and self._device_id_from_store and self.check_login():
             logger.info('使用本地 cookie 登录成功')
+            self._notify_chrome_account()
             return True
         installed, _, chrome_hint = check_chrome_installed()
         if not installed:
@@ -315,6 +332,7 @@ class XianyuLive:
         self.myid = self.cookies['unb']
         self.xianyu = XianyuApis(self.cookies, self.device_id, user_agent=self.user_agent)
         logger.info(f"登录成功: {self.cookies.get('tracknick')}")
+        self._notify_chrome_account()
         return True
 
     def relogin(self):

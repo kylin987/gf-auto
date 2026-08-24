@@ -205,6 +205,22 @@ print(result)
 
 Windows 打包改为 onedir 模式，不再每次启动解压几十 MB 文件，打开速度快很多；分发时把整个 `dist\XianYuApis` 文件夹压缩后给用户即可。
 
+## Windows 发布与在线更新
+
+Windows 客户端使用 `app_version.py` 里的 `APP_VERSION` 作为唯一版本号。发布时创建相同版本的 tag，例如代码版本为 `0.1.4` 时创建 `v0.1.4`。
+
+标签构建会生成 zip 和安装包，上传到：
+
+- `https://img.yinghuasuan.com/assets/releases/gf-auto/v0.1.4/`
+- `https://img.yinghuasuan.com/assets/releases/gf-auto/latest.json`
+
+客户端主界面会显示当前版本，并可通过“检查更新”下载、校验并启动安装包。安装目录为 `C:\Program Files (x86)\yhs-fish-plugin`。
+
+GitHub Actions 需要配置仓库 Secrets：
+
+- `ALIYUN_OSS_ACCESS_KEY_ID`
+- `ALIYUN_OSS_ACCESS_KEY_SECRET`
+
 双击 Windows 的 `dist\XianYuApis\XianYuApis.exe` 会打开桌面启动器窗口，而不是命令行：
 
 1. 填写 `XY_API_HOST`（监听 IP）和 `XY_API_PORT`（监听端口）

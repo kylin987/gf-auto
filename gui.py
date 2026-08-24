@@ -5,9 +5,13 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tkinter import messagebox
 
 from loguru import logger
 
+from app_paths import default_cookie_file, saved_chrome_account
+from app_version import APP_VERSION
+import updater
 from ws_client import GatewayLoginError, gateway_login, load_login_config
 
 
@@ -28,7 +32,6 @@ def _check_chrome():
 # 内置监听配置，不再在界面上编辑
 DEFAULT_HOST = '127.0.0.1'
 DEFAULT_PORT = 8000
-APP_VERSION = '0.1.3'
 
 
 FRIENDLY_RULES = [
@@ -261,6 +264,7 @@ class XianyuDesktopApp:
         self._log(f'登录成功：{self._account_name()}')
         self._log(f'客户端就绪 v{APP_VERSION}，等待启动')
         self._log(self._store_summary())
+        self._set_chrome_account(saved_chrome_account())
         self._update_ui()
 
     def _build_ui(self):
@@ -319,6 +323,16 @@ class XianyuDesktopApp:
             font=(UI_FONT, 11),
         )
         self.account_text.pack(anchor='w', pady=(10, 0))
+        self.chrome_account_text = tk.Label(
+            run_left,
+            text='当前 Chrome 登录闲鱼店铺：等待连接闲鱼卖家中心',
+            bg=C['surface'],
+            fg=C['muted'],
+            font=(UI_FONT, 11),
+            wraplength=460,
+            justify='left',
+        )
+        self.chrome_account_text.pack(anchor='w', pady=(4, 0))
         store_fg = C['danger'] if not self._store_ids() else C['green']
         self.store_text = tk.Label(
             run_left,
@@ -330,6 +344,31 @@ class XianyuDesktopApp:
             justify='left',
         )
         self.store_text.pack(anchor='w', pady=(4, 0))
+
+        version_row = tk.Frame(run_left, bg=C['surface'])
+        version_row.pack(anchor='w', pady=(12, 0))
+        tk.Label(
+            version_row,
+            text=f'客户端版本：v{APP_VERSION}',
+            bg=C['surface'],
+            fg=C['muted'],
+            font=(UI_FONT, 10),
+        ).pack(side='left')
+        self.update_button = tk.Button(
+            version_row,
+            text='检查更新',
+            command=self._start_update_check,
+            bg=C['surface'],
+            fg=C['green'],
+            activebackground=C['green_soft'],
+            activeforeground=C['green'],
+            relief='flat',
+            bd=0,
+            font=(UI_FONT, 10, 'bold'),
+            padx=10,
+            cursor='hand2',
+        )
+        self.update_button.pack(side='left', padx=(8, 0))
 
         self.toggle_btn = tk.Button(
             run_zone, text='启动运行', command=self._toggle,
@@ -435,6 +474,78 @@ class XianyuDesktopApp:
             return '可用闲鱼店铺：' + '，'.join(str(item) for item in ids)
         return '未绑定可用闲鱼店铺，请检查子账号所属商户和闲鱼店铺状态'
 
+    def _set_chrome_account(self, account):
+        account = account if isinstance(account, dict) else {}
+        nick = str(account.get('nick') or '').strip()
+        user_id = str(account.get('userId') or '').strip()
+        if not nick and not user_id:
+            self.chrome_account_text.configure(
+                text='当前 Chrome 登录闲鱼店铺：未识别到，请重新登录闲鱼卖家中心',
+                fg=C['danger'],
+            )
+            return
+        detail = nick or '未命名账号'
+        if user_id:
+            detail += f'（ID：{user_id}）'
+        self.chrome_account_text.configure(
+            text=f'当前 Chrome 登录闲鱼店铺：{detail}',
+            fg=C['green'],
+        )
+        self._log(f'当前 Chrome 登录闲鱼店铺：{detail}')
+
+    def _start_update_check(self):
+        self.update_button.configure(state='disabled', text='检查中...')
+        threading.Thread(target=self._check_update_worker, daemon=True).start()
+
+    def _check_update_worker(self):
+        try:
+            info = updater.check_for_update(APP_VERSION)
+            self.root.after(0, lambda: self._on_update_check_finished(info, None))
+        except Exception as exc:
+            self.root.after(0, lambda: self._on_update_check_finished(None, exc))
+
+    def _on_update_check_finished(self, info, error):
+        self.update_button.configure(state='normal', text='检查更新')
+        if error is not None:
+            messagebox.showwarning('检查更新', f'检查更新失败：{error}', parent=self.root)
+            return
+        if info is None:
+            messagebox.showinfo('检查更新', '当前已是最新版本', parent=self.root)
+            return
+        if not messagebox.askyesno(
+            '发现新版本',
+            f'发现 v{info.version}，现在下载并安装吗？',
+            parent=self.root,
+        ):
+            return
+        self.update_button.configure(state='disabled', text='下载更新...')
+        threading.Thread(target=self._download_update_worker, args=(info,), daemon=True).start()
+
+    def _download_update_worker(self, info):
+        try:
+            installer_path = updater.download_installer(info)
+            self.root.after(0, lambda: self._on_update_download_finished(installer_path, None))
+        except Exception as exc:
+            self.root.after(0, lambda: self._on_update_download_finished(None, exc))
+
+    def _on_update_download_finished(self, installer_path, error):
+        self.update_button.configure(state='normal', text='检查更新')
+        if error is not None:
+            messagebox.showwarning('下载更新', f'下载更新失败：{error}', parent=self.root)
+            return
+        if not messagebox.askyesno(
+            '安装更新',
+            '更新包已下载完成。安装会关闭客户端，是否继续？',
+            parent=self.root,
+        ):
+            return
+        try:
+            updater.launch_installer(installer_path)
+        except Exception as exc:
+            messagebox.showwarning('安装更新', f'启动安装程序失败：{exc}', parent=self.root)
+            return
+        self._on_close()
+
     def _log(self, message):
         self.log_queue.put(f'{time.strftime("%H:%M:%S")}|{message}')
 
@@ -508,8 +619,9 @@ class XianyuDesktopApp:
                     return
             live = XianyuLive(
                 cookies_str=os.environ.get('XY_COOKIE_STR'),
-                cookie_file=os.environ.get('XY_COOKIE_FILE', 'cookies.json'),
+                cookie_file=os.environ.get('XY_COOKIE_FILE') or default_cookie_file(),
                 gateway_auth=self.gateway_auth,
+                account_changed_callback=self._notify_chrome_account,
             )
             self.live = live
             if not live.ensure_login():
@@ -522,6 +634,9 @@ class XianyuDesktopApp:
             logger.exception('程序异常退出')
         finally:
             self._mark_stopped('服务已停止')
+
+    def _notify_chrome_account(self, account):
+        self.root.after(0, lambda: self._set_chrome_account(account))
 
     def _stop(self):
         if self.live is not None:
