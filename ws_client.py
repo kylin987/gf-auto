@@ -95,6 +95,7 @@ class GatewayClient:
         self.ws = None
         self._heartbeat_task = None
         self._pending_claims = {}
+        self._task_workers = set()
         self.executor_generation = 0
 
     async def run(self):
@@ -108,6 +109,7 @@ class GatewayClient:
                         async for message in ws:
                             await self._handle_message(message)
                     finally:
+                        await self._cancel_task_workers()
                         if self._heartbeat_task is not None:
                             self._heartbeat_task.cancel()
                             self._heartbeat_task = None
@@ -197,7 +199,8 @@ class GatewayClient:
             'task.xianyu.get_order_detail',
             'task.xianyu.adjust_price',
         }:
-            await self._handle_task(data)
+            # 任务内部会继续等待 claim 回包；不能占用 WebSocket 收包循环。
+            self._start_task_worker(data)
             return
 
         # 兼容旧服务端 reply 格式：reply 可能在顶层或 payload 里
@@ -220,6 +223,19 @@ class GatewayClient:
                 self._post_reply,
                 {'toid': toid, 'cid': cid, 'text': text},
             )
+
+    def _start_task_worker(self, data):
+        worker = asyncio.create_task(self._handle_task(data))
+        self._task_workers.add(worker)
+        worker.add_done_callback(self._task_workers.discard)
+
+    async def _cancel_task_workers(self):
+        workers = list(self._task_workers)
+        self._task_workers.clear()
+        for worker in workers:
+            worker.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
 
     def _post_reply(self, payload):
         try:
