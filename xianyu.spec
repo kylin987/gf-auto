@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_submodules
 ROOT = Path(SPECPATH)
 
 datas = [
+    (str(ROOT / 'assets' / 'brand'), 'assets/brand'),
     (str(ROOT / 'static' / 'goofish_js_version_2.js'), 'static'),
     (str(ROOT / 'utils' / 'et_f.js'), 'utils'),
     (str(ROOT / 'utils' / 'gen_tfstk.js'), 'utils'),
@@ -53,6 +54,7 @@ exe_kwargs = dict(
 
 if os.name == 'nt':
     exe_kwargs['version'] = str(ROOT / 'version_info.txt')
+    exe_kwargs['icon'] = str(ROOT / 'assets' / 'brand' / 'fish-app-icon.ico')
 
 if os.name == 'nt':
     # Windows 使用 onedir，避免每次启动都解压，显著加快打开速度
