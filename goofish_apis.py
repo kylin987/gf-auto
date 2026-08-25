@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import time
+import mimetypes
 from pathlib import Path
 from typing import Optional, List
 from urllib.parse import quote
@@ -485,7 +486,7 @@ class XianyuApis:
         with open(media_path, 'rb') as f:
             media_name = os.path.basename(media_path)
             files = {
-                "file": (media_name, f, "image/png")
+                "file": (media_name, f, mimetypes.guess_type(media_name)[0] or "image/jpeg")
             }
             response = self.session.post(self.upload_media_url, headers=headers, params=params, files=files)
             res_json = response.json()

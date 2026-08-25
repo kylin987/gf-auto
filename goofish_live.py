@@ -5,6 +5,8 @@ import threading
 import time
 import os
 import sys
+import mimetypes
+import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -96,6 +98,8 @@ class XianyuLive:
         self._seen_parse_failures = set()
         self._seen_status_events = set()
         self._recent_order_ids_by_cid = {}
+        self._uploaded_media_by_source = {}
+        self._media_upload_lock = threading.RLock()
         self._last_sync_log_at = 0.0
         self._sync_ack_running = False
         self.ws_client = None
@@ -683,15 +687,14 @@ class XianyuLive:
         cid = _first_field(chat, 'cid', '1')
         return str(cid).split('@')[0] if cid else None
 
-    @staticmethod
-    def _build_message(payload):
+    async def _build_message(self, payload):
         message = payload.get('message')
         if isinstance(message, dict):
             msg_type = message.get('type')
             if msg_type == 'text':
                 return make_text(str(message.get('text') or ''))
             if msg_type == 'image':
-                return make_image(
+                return await asyncio.to_thread(self._prepare_image_message,
                     str(message.get('image_url') or ''),
                     int(message.get('width') or 0),
                     int(message.get('height') or 0),
@@ -700,12 +703,60 @@ class XianyuLive:
         if payload.get('text') is not None:
             return make_text(str(payload['text']))
         if payload.get('image_url'):
-            return make_image(
+            return await asyncio.to_thread(self._prepare_image_message,
                 str(payload['image_url']),
                 int(payload.get('width') or 0),
                 int(payload.get('height') or 0),
             )
         raise ValueError('请提供 text、image_url 或 message 对象')
+
+    def _prepare_image_message(self, image_url, width=0, height=0):
+        """闲鱼聊天图片必须先上传到当前账号的媒体库，不能直接使用外部 OSS 地址。"""
+        if not image_url:
+            raise ValueError('图片地址不能为空')
+        with self._media_upload_lock:
+            cached = self._uploaded_media_by_source.get(image_url)
+            if cached:
+                return make_image(cached['url'], cached['width'], cached['height'])
+
+            response = self.xianyu.session.get(image_url, timeout=30)
+            response.raise_for_status()
+            content = response.content
+            if not content:
+                raise RuntimeError('图片下载为空')
+            content_type = response.headers.get('content-type', '').split(';', 1)[0].strip()
+            suffix = mimetypes.guess_extension(content_type) or Path(urlparse(image_url).path).suffix or '.jpg'
+            if suffix.lower() not in {'.jpg', '.jpeg', '.png', '.gif', '.webp'}:
+                suffix = '.jpg'
+
+            temp_path = ''
+            try:
+                with tempfile.NamedTemporaryFile(prefix='yhs-fish-', suffix=suffix, delete=False) as file:
+                    file.write(content)
+                    temp_path = file.name
+                uploaded = self.xianyu.upload_media(temp_path)
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+
+            image = uploaded.get('object') if isinstance(uploaded, dict) else None
+            if not isinstance(image, dict) or not image.get('url'):
+                raise RuntimeError(f'闲鱼图片上传失败: {str(uploaded)[:300]}')
+            uploaded_width, uploaded_height = width, height
+            pix = str(image.get('pix') or '')
+            if 'x' in pix:
+                try:
+                    uploaded_width, uploaded_height = (int(value) for value in pix.lower().split('x', 1))
+                except ValueError:
+                    pass
+            if uploaded_width <= 0 or uploaded_height <= 0:
+                raise RuntimeError('闲鱼图片上传未返回有效尺寸')
+            result = {'url': str(image['url']), 'width': uploaded_width, 'height': uploaded_height}
+            self._uploaded_media_by_source[image_url] = result
+            return make_image(result['url'], result['width'], result['height'])
 
     async def _send_reply(self, payload):
         if self.ws is None:
@@ -724,7 +775,7 @@ class XianyuLive:
                 raise LookupError(f'未找到与用户 {toid} 的会话，请提供 cid，或提供 item_id 自动创建会话')
         if not cid:
             raise RuntimeError('创建会话失败，无法定位 cid')
-        message = self._build_message(payload)
+        message = await self._build_message(payload)
         await self.send_msg(self.ws, cid, toid, message)
         return {'ok': True, 'cid': cid, 'toid': toid, 'type': message['type']}
 
