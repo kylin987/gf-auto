@@ -835,6 +835,14 @@ class XianyuLive:
             pic_list = payload.get('pic_list')
         return self.xianyu.consign_dummy(str(order_id), trade_text, pic_list)
 
+    def cancel_order(self, payload):
+        """本地 HTTP 接口调用的卖家取消订单入口。"""
+        order_id = payload.get('orderId') or payload.get('order_id')
+        if not order_id:
+            raise ValueError('缺少 orderId')
+        close_reason = str(payload.get('closeReason') or payload.get('close_reason') or '与买家协商一致')
+        return self.xianyu.close_order_by_seller(str(order_id), close_reason)
+
     def start_local_api(self, host='127.0.0.1', port=8000):
         if self.api_server is not None:
             return self.api_server

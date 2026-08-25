@@ -19,7 +19,7 @@ class _LocalApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ('/api/reply', '/api/send', '/api/adjust_price', '/api/order_detail', '/api/consign_dummy'):
+        if path not in ('/api/reply', '/api/send', '/api/adjust_price', '/api/order_detail', '/api/consign_dummy', '/api/cancel_order'):
             self._send_json({'error': 'not found'}, status=404)
             return
         payload = self._read_json()
@@ -32,6 +32,8 @@ class _LocalApiHandler(BaseHTTPRequestHandler):
                 result = {'ok': True, 'order': self.server.live.get_order_detail(payload)}
             elif path == '/api/consign_dummy':
                 result = {'ok': True, 'result': self.server.live.consign_dummy_order(payload)}
+            elif path == '/api/cancel_order':
+                result = {'ok': True, 'result': self.server.live.cancel_order(payload)}
             else:
                 result = self.server.live.send_reply(payload)
         except ValueError as exc:

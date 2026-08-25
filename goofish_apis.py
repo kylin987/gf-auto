@@ -613,6 +613,20 @@ class XianyuApis:
             spm_cnt='a21107h.42831410.0.0',
         )
 
+    def close_order_by_seller(self, order_id, close_reason='与买家协商一致'):
+        """卖家取消已付款、待发货的闲鱼订单。"""
+        data_val = json.dumps({
+            'tid': str(order_id),
+            'bizOrderId': str(order_id),
+            'closeReason': str(close_reason or '与买家协商一致'),
+        }, ensure_ascii=False, separators=(',', ':'))
+        return self._seller_mtop_post(
+            'mtop.taobao.idle.trade.merchant.close.by.seller',
+            data_val,
+            version='2.0',
+            spm_cnt='a21107h.42829863.0.0',
+        )
+
 
     def get_public_channel(self, title, images_info):
         headers = {

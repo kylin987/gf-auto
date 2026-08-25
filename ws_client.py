@@ -201,6 +201,7 @@ class GatewayClient:
             'task.xianyu.get_order_detail',
             'task.xianyu.adjust_price',
             'task.xianyu.consign_dummy',
+            'task.xianyu.cancel_order',
         }:
             # 任务内部会继续等待 claim 回包；不能占用 WebSocket 收包循环。
             self._start_task_worker(data)
@@ -418,6 +419,17 @@ class GatewayClient:
             self._ensure_mtop_success(result, '闲鱼虚拟发货')
             logger.info(f'闲鱼虚拟发货完成：订单={order_id}')
             return result
+        if task_type == 'task.xianyu.cancel_order':
+            order_id = payload.get('orderId') or payload.get('order_id')
+            if not order_id:
+                raise ValueError('payload.orderId不能为空')
+            result = self._local_post('/api/cancel_order', {
+                'orderId': str(order_id),
+                'closeReason': str(payload.get('closeReason') or payload.get('close_reason') or '与买家协商一致'),
+            })
+            self._ensure_mtop_success(result, '闲鱼取消订单')
+            logger.info(f'闲鱼取消订单完成：订单={order_id}')
+            return result
         raise ValueError(f'不支持的任务类型：{task_type}')
 
     @staticmethod
@@ -524,4 +536,6 @@ class GatewayClient:
             return f'修改订单价格 订单={payload.get("orderId") or payload.get("order_id") or ""} 金额分={payload.get("modifyFee") or payload.get("modify_fee") or ""}'
         if task_type == 'task.xianyu.consign_dummy':
             return f'虚拟发货 订单={payload.get("orderId") or payload.get("order_id") or ""}'
+        if task_type == 'task.xianyu.cancel_order':
+            return f'取消订单 订单={payload.get("orderId") or payload.get("order_id") or ""}'
         return task_type

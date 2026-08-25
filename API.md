@@ -282,6 +282,23 @@ curl -X POST http://127.0.0.1:8000/api/consign_dummy -H "Content-Type: applicati
 
 ---
 
+## 6. 卖家取消订单
+
+### POST /api/cancel_order
+
+调用闲鱼卖家端取消订单接口，仅用于已付款但尚未发货的订单。
+
+| 字段 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `orderId` | 是 | string | 闲鱼订单号，也接受 `order_id` |
+| `closeReason` | 否 | string | 取消原因，默认“与买家协商一致” |
+
+```bat
+curl -X POST http://127.0.0.1:8000/api/cancel_order -H "Content-Type: application/json" -d "{\"orderId\":\"5127190491362214211\",\"closeReason\":\"与买家协商一致\"}"
+```
+
+---
+
 ## 通用错误格式
 
 所有接口的错误响应统一为：
