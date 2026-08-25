@@ -7,12 +7,19 @@ import time
 import tkinter as tk
 from tkinter import messagebox
 
+from pathlib import Path
+
 from loguru import logger
 
 from app_paths import default_cookie_file, saved_chrome_account
 from app_version import APP_VERSION
 import updater
 from ws_client import GatewayLoginError, gateway_login, load_login_config
+
+
+def _asset_path(relative_path):
+    base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
+    return str(base / relative_path)
 
 
 def _check_chrome():
@@ -96,28 +103,29 @@ def friendly_line(message):
             return None
     return None
 
-if sys.platform == 'darwin':
-    UI_FONT = 'PingFang SC'
-else:
-    UI_FONT = 'Microsoft YaHei'
+UI_FONT = 'PingFang SC' if sys.platform == 'darwin' else 'Microsoft YaHei'
 
 C = {
-    'bg': '#f6f4ef',
-    'surface': '#fffdfa',
-    'ink': '#3a3833',
-    'muted': '#7d7a72',
-    'line': '#e8e4dc',
-    'titlebar': '#2b2b2b',
-    'titlebar_text': '#f2f0ea',
-    'yellow': '#ffd84d',
-    'yellow_strong': '#f6c94a',
-    'yellow_dark': '#e6b93f',
-    'yellow_soft': '#fdf6dc',
-    'green': '#3d9e6f',
-    'green_soft': '#e3f4ec',
+    'bg': '#fff8e8',
+    'surface': '#fffef9',
+    'ink': '#2b2116',
+    'muted': '#776d5e',
+    'line': '#eee2c9',
+    'nav': '#ffd400',
+    'nav_active': '#a91f1b',
+    'nav_muted': '#7a421a',
+    'red': '#c7372f',
+    'red_soft': '#ffe9e5',
+    'green': '#20815f',
+    'green_soft': '#e6f6ee',
+    'yellow': '#ffd400',
+    'yellow_deep': '#8f1c19',
+    'yellow_soft': '#fbe4e1',
+    'gray_soft': '#f5eddd',
     'gray': '#9a968e',
-    'gray_soft': '#f1efe9',
-    'danger': '#b04a3e',
+    'titlebar': '#2b2116',
+    'titlebar_text': '#fffef9',
+    'danger': '#c7372f',
 }
 
 
@@ -125,7 +133,10 @@ class LoginView:
     def __init__(self, root, on_success):
         self.root = root
         self.on_success = on_success
-        self.root.title('闲鱼 AI 客服助手 - 登录')
+        self.app_icon = tk.PhotoImage(file=_asset_path('assets/brand/fish-app-icon.png'))
+        self.login_logo = self.app_icon.subsample(6, 6)
+        self.root.iconphoto(True, self.app_icon)
+        self.root.title(f'闲鱼店铺插件 v{APP_VERSION} - 登录')
         self.root.geometry('880x640')
         self.root.minsize(720, 520)
         self.root.configure(bg=C['bg'])
@@ -136,34 +147,32 @@ class LoginView:
         frame.pack(fill='both', expand=True)
 
         top = tk.Frame(frame, bg=C['bg'])
-        top.pack(pady=(64, 0))
-        icon = tk.Canvas(top, width=52, height=52, bg=C['yellow'],
-                         highlightthickness=0)
-        icon.pack()
-        icon.create_text(26, 26, text='影', fill=C['ink'],
-                         font=(UI_FONT, 26, 'bold'))
-        tk.Label(top, text='闲鱼 AI 客服助手', bg=C['bg'], fg=C['ink'],
-                 font=(UI_FONT, 22, 'bold')).pack(pady=(14, 6))
+        top.pack(pady=(48, 0))
+        tk.Label(top, image=self.login_logo, bg=C['bg']).pack()
+        tk.Label(top, text='闲鱼店铺插件', bg=C['bg'], fg=C['ink'],
+                 font=(UI_FONT, 22, 'bold')).pack(pady=(12, 3))
+        tk.Label(top, text='影划算票务', bg=C['bg'], fg=C['nav_muted'],
+                 font=(UI_FONT, 11, 'bold')).pack(pady=(0, 6))
         tk.Label(top, text='需使用影划算后台-系统-子账号管理，创建的子账号进行登录',
-                 bg=C['bg'], fg=C['muted'], font=(UI_FONT, 11),
+                 bg=C['bg'], fg=C['muted'], font=(UI_FONT, 10),
                  wraplength=420, justify='center').pack()
 
         card = tk.Frame(frame, bg=C['surface'], highlightthickness=1,
-                        highlightbackground=C['line'], padx=36, pady=30,
+                        highlightbackground=C['line'], padx=36, pady=26,
                         width=420)
-        card.pack(pady=28)
+        card.pack(pady=24)
 
         tk.Label(card, text='账号', bg=C['surface'], fg=C['ink'],
                  font=(UI_FONT, 11, 'bold')).pack(anchor='w')
         config = load_login_config()
         self.username_var = tk.StringVar(value=config.get('username', ''))
         self.username_entry = self._make_entry(card, self.username_var)
-        self.username_entry.pack(fill='x', pady=(6, 18))
+        self.username_entry.pack(fill='x', pady=(6, 16))
 
         tk.Label(card, text='密码', bg=C['surface'], fg=C['ink'],
                  font=(UI_FONT, 11, 'bold')).pack(anchor='w')
         pwd_frame = tk.Frame(card, bg=C['surface'])
-        pwd_frame.pack(fill='x', pady=(6, 22))
+        pwd_frame.pack(fill='x', pady=(6, 20))
         self.password_var = tk.StringVar(value=config.get('password', ''))
         self.password_entry_wrap = self._make_entry(pwd_frame, self.password_var, show='*')
         self.password_entry_wrap.pack(fill='x', expand=True)
@@ -171,29 +180,29 @@ class LoginView:
 
         self.login_btn = tk.Button(
             card, text='登录', command=self._login,
-            bg=C['yellow'], fg=C['ink'], activebackground=C['yellow_strong'],
+            bg=C['nav'], fg=C['ink'], activebackground='#e6be00',
             activeforeground=C['ink'], relief='flat', bd=0,
-            font=(UI_FONT, 13, 'bold'), pady=12, cursor='hand2',
+            font=(UI_FONT, 13, 'bold'), pady=11, cursor='hand2',
         )
         self.login_btn.pack(fill='x')
 
         self.error_var = tk.StringVar()
         tk.Label(card, textvariable=self.error_var, bg=C['surface'],
                  fg=C['danger'], font=(UI_FONT, 10), wraplength=320,
-                 justify='left').pack(pady=(14, 0), anchor='w')
+                 justify='left').pack(pady=(12, 0), anchor='w')
 
         self.root.bind('<Return>', lambda _e: self._login())
 
     def _make_entry(self, parent, var, show=None):
-        wrap = tk.Frame(parent, bg='#fbfaf6', highlightthickness=1,
+        wrap = tk.Frame(parent, bg=C['surface'], highlightthickness=1,
                         highlightbackground=C['line'],
-                        highlightcolor=C['yellow_dark'])
+                        highlightcolor=C['yellow_deep'])
         entry = tk.Entry(wrap, textvariable=var, show=show, font=(UI_FONT, 12),
-                         bg='#fbfaf6', fg=C['ink'], relief='flat', bd=0,
+                         bg=C['surface'], fg=C['ink'], relief='flat', bd=0,
                          insertbackground=C['ink'])
         entry.pack(fill='x', padx=12, pady=9)
         entry.bind('<FocusIn>', lambda _e: wrap.configure(
-            highlightbackground=C['yellow_dark'], highlightcolor=C['yellow_dark']))
+            highlightbackground=C['yellow_deep'], highlightcolor=C['yellow_deep']))
         entry.bind('<FocusOut>', lambda _e: wrap.configure(
             highlightbackground=C['line']))
         wrap.entry = entry
@@ -230,7 +239,7 @@ class LoginView:
         self.root.after(0, lambda: self._login_ok(data))
 
     def _login_failed(self, message):
-        self.login_btn.configure(state='normal', text='登录', bg=C['yellow'])
+        self.login_btn.configure(state='normal', text='登录', bg=C['nav'])
         self.error_var.set(message)
 
     def _login_ok(self, data):
@@ -522,8 +531,12 @@ class XianyuDesktopApp:
         threading.Thread(target=self._download_update_worker, args=(info,), daemon=True).start()
 
     def _download_update_worker(self, info):
+        def on_progress(downloaded, total):
+            pct = (downloaded / total * 100.0) if total > 0 else 0
+            self.root.after(0, lambda p=pct: self.update_button.configure(text=f'下载中 {p:.0f}%'))
+
         try:
-            installer_path = updater.download_installer(info)
+            installer_path = updater.download_installer(info, progress_callback=on_progress)
             self.root.after(0, lambda: self._on_update_download_finished(installer_path, None))
         except Exception as exc:
             self.root.after(0, lambda: self._on_update_download_finished(None, exc))

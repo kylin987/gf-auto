@@ -34,6 +34,105 @@ C = {
 }
 
 
+class DownloadProgressDialog:
+    """下载更新进度弹窗。"""
+
+    def __init__(self, parent, version: str, total_bytes: int = 0):
+        self.top = tk.Toplevel(parent)
+        self.top.title(f'正在下载更新 v{version}')
+        self.top.geometry('460x220')
+        self.top.minsize(440, 200)
+        self.top.configure(bg=C['bg'])
+        self.top.transient(parent)
+        self.top.grab_set()
+
+        # 居中显示
+        self.top.update_idletasks()
+        pw = parent.winfo_width()
+        ph = parent.winfo_height()
+        px = parent.winfo_rootx()
+        py = parent.winfo_rooty()
+        w = 460
+        h = 220
+        x = max(0, px + (pw - w) // 2)
+        y = max(0, py + (ph - h) // 2)
+        self.top.geometry(f'{w}x{h}+{x}+{y}')
+
+        card = tk.Frame(self.top, bg=C['surface'], highlightthickness=1,
+                        highlightbackground=C['line'], padx=24, pady=20)
+        card.pack(fill='both', expand=True, padx=16, pady=16)
+
+        self.title_label = tk.Label(
+            card, text=f'正在下载新版本 v{version}...',
+            bg=C['surface'], fg=C['ink'], font=(UI_FONT, 13, 'bold')
+        )
+        self.title_label.pack(anchor='w')
+
+        self.bar_height = 16
+        self.canvas = tk.Canvas(
+            card, height=self.bar_height, bg=C['gray_soft'],
+            highlightthickness=1, highlightbackground=C['line']
+        )
+        self.canvas.pack(fill='x', pady=(16, 8))
+        self.fill_rect = self.canvas.create_rectangle(
+            0, 0, 0, self.bar_height, fill=C['green'], width=0
+        )
+
+        info_row = tk.Frame(card, bg=C['surface'])
+        info_row.pack(fill='x')
+
+        self.size_label = tk.Label(
+            info_row, text='正在连接更新服务器...', bg=C['surface'], fg=C['muted'],
+            font=(UI_FONT, 10)
+        )
+        self.size_label.pack(side='left')
+
+        self.percent_label = tk.Label(
+            info_row, text='0.0%', bg=C['surface'], fg=C['ink'],
+            font=(UI_FONT, 11, 'bold')
+        )
+        self.percent_label.pack(side='right')
+
+        self.status_hint = tk.Label(
+            card, text='下载完成后将自动校验完整性并提示安装',
+            bg=C['surface'], fg=C['muted'], font=(UI_FONT, 9)
+        )
+        self.status_hint.pack(anchor='w', pady=(10, 0))
+
+    def update_progress(self, downloaded: int, total: int):
+        if not self.top.winfo_exists():
+            return
+        canvas_width = max(self.canvas.winfo_width(), 360)
+        if total > 0:
+            pct = min(100.0, (downloaded / total) * 100.0)
+            down_mb = downloaded / (1024 * 1024)
+            total_mb = total / (1024 * 1024)
+            fill_width = int((pct / 100.0) * canvas_width)
+            self.canvas.coords(self.fill_rect, 0, 0, max(fill_width, 0), self.bar_height)
+            self.percent_label.configure(text=f'{pct:.1f}%')
+            self.size_label.configure(text=f'{down_mb:.1f} MB / {total_mb:.1f} MB')
+        else:
+            down_mb = downloaded / (1024 * 1024)
+            self.percent_label.configure(text='下载中...')
+            self.size_label.configure(text=f'已下载 {down_mb:.1f} MB')
+
+    def set_verifying(self):
+        if not self.top.winfo_exists():
+            return
+        canvas_width = max(self.canvas.winfo_width(), 360)
+        self.canvas.coords(self.fill_rect, 0, 0, canvas_width, self.bar_height)
+        self.percent_label.configure(text='100.0%')
+        self.title_label.configure(text='下载完成，正在校验完整性...')
+        self.status_hint.configure(text='正在验证 SHA256 签名，请稍候...')
+
+    def close(self):
+        try:
+            self.top.grab_release()
+            self.top.destroy()
+        except Exception:
+            pass
+
+
 class XianyuDesktopApp:
     """多闲鱼店铺实例的桌面工作台。"""
 
@@ -50,8 +149,12 @@ class XianyuDesktopApp:
         self._sink_id = logger.add(self.log_queue.put, level='INFO', enqueue=True, format=self._format_log)
         self._sync_authorized_stores()
 
+        self.downloading_update = False
+        self.download_dialog = None
+        self.update_progress_info = None
+
         self.app_icon = tk.PhotoImage(file=self._asset_path('assets/brand/fish-app-icon.png'))
-        self.brand_logo = self.app_icon.subsample(8, 8)
+        self.brand_logo = self.app_icon.subsample(14, 14)
         self.root.iconphoto(True, self.app_icon)
         self.root.title(f'闲鱼店铺插件 v{APP_VERSION}')
         self.root.geometry('1180x760')
@@ -128,36 +231,36 @@ class XianyuDesktopApp:
     def _build_shell(self):
         self.shell = tk.Frame(self.root, bg=C['bg'])
         self.shell.pack(fill='both', expand=True)
-        self.nav = tk.Frame(self.shell, bg=C['nav'], width=202)
+        self.nav = tk.Frame(self.shell, bg=C['nav'], width=224)
         self.nav.pack(side='left', fill='y')
         self.nav.pack_propagate(False)
         brand = tk.Frame(self.nav, bg=C['nav'])
-        brand.pack(fill='x', padx=20, pady=(22, 27))
-        tk.Label(brand, image=self.brand_logo, bg=C['nav']).pack(side='left', padx=(0, 10))
+        brand.pack(fill='x', padx=16, pady=(20, 24))
+        tk.Label(brand, image=self.brand_logo, bg=C['nav']).pack(side='left', padx=(0, 8))
         brand_text = tk.Frame(brand, bg=C['nav'])
-        brand_text.pack(side='left')
-        tk.Label(brand_text, text='闲鱼店铺插件', bg=C['nav'], fg=C['ink'], font=(UI_FONT, 15, 'bold')).pack(anchor='w')
-        tk.Label(brand_text, text='影划算票务', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 8, 'bold')).pack(anchor='w', pady=(2, 0))
-        tk.Label(self.nav, text='工作台', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=24)
+        brand_text.pack(side='left', fill='x', expand=True)
+        tk.Label(brand_text, text='闲鱼店铺插件', bg=C['nav'], fg=C['ink'], font=(UI_FONT, 14, 'bold')).pack(anchor='w')
+        tk.Label(brand_text, text='影划算票务', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 9, 'bold')).pack(anchor='w', pady=(2, 0))
+        tk.Label(self.nav, text='工作台', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=20)
         self.nav_buttons = {}
         for key, label in [('overview', '店铺概览'), ('events', '实时事件'), ('stores', '店铺实例')]:
             button = tk.Button(self.nav, text=label, command=lambda value=key: self._navigate(value),
-                               anchor='w', padx=23, pady=10, bd=0, relief='flat', cursor='hand2',
+                               anchor='w', padx=20, pady=10, bd=0, relief='flat', cursor='hand2',
                                bg=C['nav'], fg=C['ink'], activebackground=C['nav_active'], activeforeground='#fff',
                                font=(UI_FONT, 11, 'bold'))
-            button.pack(fill='x', padx=11, pady=2)
+            button.pack(fill='x', padx=10, pady=2)
             self.nav_buttons[key] = button
-        tk.Label(self.nav, text='客户端', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=24, pady=(23, 0))
+        tk.Label(self.nav, text='客户端', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=20, pady=(20, 0))
         for key, label in [('update', '软件更新'), ('settings', '设置')]:
             button = tk.Button(self.nav, text=label, command=lambda value=key: self._navigate(value),
-                               anchor='w', padx=23, pady=10, bd=0, relief='flat', cursor='hand2',
+                               anchor='w', padx=20, pady=10, bd=0, relief='flat', cursor='hand2',
                                bg=C['nav'], fg=C['ink'], activebackground=C['nav_active'], activeforeground='#fff',
                                font=(UI_FONT, 11, 'bold'))
-            button.pack(fill='x', padx=11, pady=2)
+            button.pack(fill='x', padx=10, pady=2)
             self.nav_buttons[key] = button
         account = self.gateway_auth.get('user') or {}
         tk.Label(self.nav, text=f"登录子账号\n{account.get('username') or '未知'}\n\nv{APP_VERSION}",
-                 justify='left', anchor='w', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10)).pack(side='bottom', fill='x', padx=23, pady=22)
+                 justify='left', anchor='w', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10)).pack(side='bottom', fill='x', padx=20, pady=20)
         self.main = tk.Frame(self.shell, bg=C['bg'])
         self.main.pack(side='left', fill='both', expand=True)
 
@@ -448,8 +551,33 @@ class XianyuDesktopApp:
         tk.Label(card, text='闲鱼店铺插件', bg=C['surface'], fg=C['ink'], font=(UI_FONT, 18, 'bold')).pack(anchor='w')
         tk.Label(card, text=f'当前版本：v{APP_VERSION}', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 11)).pack(anchor='w', pady=(9, 0))
         tk.Label(card, text='更新会下载经校验的 Windows 安装包，现有店铺 Cookie 与配置会被保留。', bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).pack(anchor='w', pady=(5, 17))
-        tk.Button(card, text='检查更新', command=self._start_update_check, bg=C['yellow'], fg='#fff', activebackground=C['yellow_deep'], activeforeground='#fff',
-                  bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 11, 'bold'), padx=18, pady=10).pack(anchor='w')
+        
+        btn_row = tk.Frame(card, bg=C['surface'])
+        btn_row.pack(anchor='w')
+        self.update_check_btn = tk.Button(
+            btn_row,
+            text='检查更新' if not self.downloading_update else '正在下载更新...',
+            command=self._start_update_check,
+            bg=C['yellow'] if not self.downloading_update else C['gray_soft'],
+            fg='#fff' if not self.downloading_update else C['muted'],
+            activebackground=C['yellow_deep'], activeforeground='#fff',
+            state='disabled' if self.downloading_update else 'normal',
+            bd=0, relief='flat', cursor='hand2' if not self.downloading_update else 'arrow',
+            font=(UI_FONT, 11, 'bold'), padx=18, pady=10,
+        )
+        self.update_check_btn.pack(side='left')
+
+        if self.downloading_update and self.update_progress_info:
+            progress_card = tk.Frame(card, bg=C['surface'])
+            progress_card.pack(fill='x', pady=(16, 0))
+            v = self.update_progress_info.get('version', '')
+            down = self.update_progress_info.get('downloaded', 0)
+            total = self.update_progress_info.get('total', 0)
+            pct = (down / total * 100.0) if total > 0 else 0.0
+            down_mb = down / (1024 * 1024)
+            total_mb = total / (1024 * 1024)
+            tk.Label(progress_card, text=f'正在下载更新 v{v}：{pct:.1f}% ({down_mb:.1f} MB / {total_mb:.1f} MB)',
+                     bg=C['surface'], fg=C['green'], font=(UI_FONT, 11, 'bold')).pack(anchor='w')
 
     def _show_settings(self):
         self.current_view = 'settings'
@@ -545,6 +673,10 @@ class XianyuDesktopApp:
         self._refresh_logs_only()
 
     def _start_update_check(self):
+        if self.downloading_update:
+            return
+        if hasattr(self, 'update_check_btn') and self.update_check_btn.winfo_exists():
+            self.update_check_btn.configure(state='disabled', text='正在检查...')
         threading.Thread(target=self._check_update_worker, daemon=True).start()
 
     def _check_update_worker(self):
@@ -555,27 +687,50 @@ class XianyuDesktopApp:
             self.root.after(0, lambda: self._finish_update_check(None, exc))
 
     def _finish_update_check(self, info, error):
+        if hasattr(self, 'update_check_btn') and self.update_check_btn.winfo_exists():
+            self.update_check_btn.configure(state='normal', text='检查更新')
         if error:
             messagebox.showwarning('检查更新', f'检查更新失败：{error}', parent=self.root)
             return
         if info is None:
-            messagebox.showinfo('检查更新', '当前已是最新版本', parent=self.root)
+            messagebox.showinfo('检查更新', f'当前已是最新版本 (v{APP_VERSION})', parent=self.root)
             return
-        if messagebox.askyesno('发现新版本', f'发现 v{info.version}，现在下载并安装吗？', parent=self.root):
+        size_mb = (info.installer_size / (1024 * 1024)) if info.installer_size > 0 else 0
+        size_hint = f' (大小: {size_mb:.1f} MB)' if size_mb > 0 else ''
+        if messagebox.askyesno('发现新版本', f'发现新版本 v{info.version}{size_hint}，现在下载并安装吗？', parent=self.root):
+            self.download_dialog = DownloadProgressDialog(self.root, info.version, info.installer_size)
             threading.Thread(target=self._download_update_worker, args=(info,), daemon=True).start()
 
     def _download_update_worker(self, info):
+        self.downloading_update = True
+        self.update_progress_info = {'version': info.version, 'downloaded': 0, 'total': info.installer_size}
+
+        def on_progress(downloaded, total):
+            self.update_progress_info = {'version': info.version, 'downloaded': downloaded, 'total': total}
+            self.root.after(0, lambda d=downloaded, t=total: self._on_download_progress(d, t))
+
         try:
-            installer = updater.download_installer(info)
+            installer = updater.download_installer(info, progress_callback=on_progress)
             self.root.after(0, lambda: self._finish_update_download(installer, None))
         except Exception as exc:
             self.root.after(0, lambda: self._finish_update_download(None, exc))
 
+    def _on_download_progress(self, downloaded, total):
+        if self.download_dialog:
+            self.download_dialog.update_progress(downloaded, total)
+
     def _finish_update_download(self, installer, error):
+        self.downloading_update = False
+        if self.download_dialog:
+            if error is None:
+                self.download_dialog.set_verifying()
+            self.download_dialog.close()
+            self.download_dialog = None
+        self._refresh_current_view()
         if error:
             messagebox.showwarning('下载更新', f'下载更新失败：{error}', parent=self.root)
             return
-        if messagebox.askyesno('安装更新', '更新包已下载完成，是否现在安装？', parent=self.root):
+        if messagebox.askyesno('安装更新', '更新包已下载并校验完成，是否现在安装？（安装会关闭当前客户端）', parent=self.root):
             updater.launch_installer(installer)
             self._on_close()
 

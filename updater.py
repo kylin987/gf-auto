@@ -14,6 +14,9 @@ from urllib.parse import urlparse
 import requests
 
 
+from typing import Callable
+
+
 DEFAULT_UPDATE_MANIFEST_URL = (
     "https://img.yinghuasuan.com/assets/releases/gf-auto/latest.json"
 )
@@ -44,20 +47,32 @@ def check_for_update(current_version: str) -> UpdateInfo | None:
     return info
 
 
-def download_installer(info: UpdateInfo) -> Path:
+def download_installer(
+    info: UpdateInfo,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> Path:
     update_dir = _update_dir()
     update_dir.mkdir(parents=True, exist_ok=True)
     target = update_dir / info.installer_filename
     if target.is_file() and _sha256_file(target).lower() == info.installer_sha256:
+        if progress_callback:
+            progress_callback(info.installer_size, info.installer_size)
         return target
 
     partial = target.with_suffix(target.suffix + ".download")
     with requests.get(info.installer_url, stream=True, timeout=_TIMEOUT_SECONDS) as response:
         response.raise_for_status()
+        total_size = int(response.headers.get("content-length", 0) or 0) or info.installer_size
+        downloaded = 0
+        if progress_callback:
+            progress_callback(0, total_size)
         with partial.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
                 if chunk:
                     handle.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback:
+                        progress_callback(downloaded, total_size)
 
     if _sha256_file(partial).lower() != info.installer_sha256:
         partial.unlink(missing_ok=True)
