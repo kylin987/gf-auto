@@ -612,7 +612,16 @@ class XianyuLive:
         else:
             logger.error(f"不支持的消息类型: {msg_type}")
             return
-        await ws.send(json.dumps(msg))
+        response = await self._request(
+            ws,
+            '/r/MessageSend/sendByReceiverScope',
+            msg['body'],
+            timeout=15.0,
+        )
+        code = response.get('code')
+        if code not in (None, 200):
+            raise RuntimeError(f'闲鱼消息发送失败: code={code}, body={str(response.get("body"))[:200]}')
+        return response
 
     async def _request(self, ws, lwp, body, timeout=10.0):
         """发送一次 RPC，并等待携带相同 mid 的服务端响应。"""
