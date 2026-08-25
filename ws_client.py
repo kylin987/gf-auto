@@ -402,9 +402,29 @@ class GatewayClient:
                 'modifyFee': str(modify_fee),
                 'newTransportFee': str(new_transport_fee),
             })
+            self._ensure_mtop_success(result, '闲鱼改价')
             logger.info(f'订单改价完成：订单={order_id} 金额分={modify_fee}')
             return result
         raise ValueError(f'不支持的任务类型：{task_type}')
+
+    @staticmethod
+    def _ensure_mtop_success(result, action):
+        """MTop 请求即使 HTTP 200，也会把业务失败写入 ret。"""
+        response = result.get('result') if isinstance(result, dict) else None
+        if not isinstance(response, dict):
+            raise RuntimeError(f'{action}失败：接口返回异常')
+
+        ret = response.get('ret')
+        ret_items = ret if isinstance(ret, list) else [ret] if ret else []
+        if any(str(item).upper().startswith('SUCCESS') for item in ret_items):
+            return
+
+        data = response.get('data') if isinstance(response.get('data'), dict) else {}
+        message = data.get('errMsg') or data.get('errCode') or next(
+            (str(item) for item in ret_items if str(item).strip()),
+            '',
+        )
+        raise RuntimeError(f'{action}失败：{message or "闲鱼未确认改价成功"}')
 
     def _send_message_payload(self, payload):
         toid = payload.get('toid') or payload.get('buyerId') or payload.get('senderUserId')
