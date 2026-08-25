@@ -573,11 +573,13 @@ class XianyuDesktopApp:
             v = self.update_progress_info.get('version', '')
             down = self.update_progress_info.get('downloaded', 0)
             total = self.update_progress_info.get('total', 0)
-            pct = (down / total * 100.0) if total > 0 else 0.0
-            down_mb = down / (1024 * 1024)
-            total_mb = total / (1024 * 1024)
-            tk.Label(progress_card, text=f'正在下载更新 v{v}：{pct:.1f}% ({down_mb:.1f} MB / {total_mb:.1f} MB)',
-                     bg=C['surface'], fg=C['green'], font=(UI_FONT, 11, 'bold')).pack(anchor='w')
+            self.update_progress_label = tk.Label(
+                progress_card,
+                text='',
+                bg=C['surface'], fg=C['green'], font=(UI_FONT, 11, 'bold'),
+            )
+            self.update_progress_label.pack(anchor='w')
+            self._refresh_update_progress_text(v, down, total, self.update_progress_info.get('verifying', False))
 
     def _show_settings(self):
         self.current_view = 'settings'
@@ -698,32 +700,76 @@ class XianyuDesktopApp:
         size_mb = (info.installer_size / (1024 * 1024)) if info.installer_size > 0 else 0
         size_hint = f' (大小: {size_mb:.1f} MB)' if size_mb > 0 else ''
         if messagebox.askyesno('发现新版本', f'发现新版本 v{info.version}{size_hint}，现在下载并安装吗？', parent=self.root):
+            self.downloading_update = True
+            self.update_progress_info = {
+                'version': info.version,
+                'downloaded': 0,
+                'total': info.installer_size,
+                'verifying': False,
+            }
             self.download_dialog = DownloadProgressDialog(self.root, info.version, info.installer_size)
+            self._show_update()
             threading.Thread(target=self._download_update_worker, args=(info,), daemon=True).start()
 
     def _download_update_worker(self, info):
-        self.downloading_update = True
-        self.update_progress_info = {'version': info.version, 'downloaded': 0, 'total': info.installer_size}
-
         def on_progress(downloaded, total):
-            self.update_progress_info = {'version': info.version, 'downloaded': downloaded, 'total': total}
             self.root.after(0, lambda d=downloaded, t=total: self._on_download_progress(d, t))
 
+        def on_verifying():
+            self.root.after(0, self._on_download_verifying)
+
         try:
-            installer = updater.download_installer(info, progress_callback=on_progress)
+            installer = updater.download_installer(
+                info,
+                progress_callback=on_progress,
+                verifying_callback=on_verifying,
+            )
             self.root.after(0, lambda: self._finish_update_download(installer, None))
         except Exception as exc:
             self.root.after(0, lambda: self._finish_update_download(None, exc))
 
     def _on_download_progress(self, downloaded, total):
+        if self.update_progress_info is not None:
+            self.update_progress_info.update({'downloaded': downloaded, 'total': total, 'verifying': False})
         if self.download_dialog:
             self.download_dialog.update_progress(downloaded, total)
+        if self.update_progress_info:
+            self._refresh_update_progress_text(
+                self.update_progress_info['version'],
+                downloaded,
+                total,
+                False,
+            )
+
+    def _on_download_verifying(self):
+        if self.update_progress_info is not None:
+            self.update_progress_info['verifying'] = True
+        if self.download_dialog:
+            self.download_dialog.set_verifying()
+        if self.update_progress_info:
+            self._refresh_update_progress_text(
+                self.update_progress_info['version'],
+                self.update_progress_info.get('downloaded', 0),
+                self.update_progress_info.get('total', 0),
+                True,
+            )
+
+    def _refresh_update_progress_text(self, version, downloaded, total, verifying):
+        label = getattr(self, 'update_progress_label', None)
+        if not label or not label.winfo_exists():
+            return
+        if verifying:
+            label.configure(text=f'更新 v{version} 已下载完成，正在校验完整性...')
+            return
+        if total > 0:
+            pct = min(100.0, downloaded / total * 100.0)
+            label.configure(text=f'正在下载更新 v{version}：{pct:.1f}% ({downloaded / (1024 * 1024):.1f} MB / {total / (1024 * 1024):.1f} MB)')
+            return
+        label.configure(text=f'正在下载更新 v{version}：已下载 {downloaded / (1024 * 1024):.1f} MB')
 
     def _finish_update_download(self, installer, error):
         self.downloading_update = False
         if self.download_dialog:
-            if error is None:
-                self.download_dialog.set_verifying()
             self.download_dialog.close()
             self.download_dialog = None
         self._refresh_current_view()

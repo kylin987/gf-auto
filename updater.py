@@ -50,14 +50,18 @@ def check_for_update(current_version: str) -> UpdateInfo | None:
 def download_installer(
     info: UpdateInfo,
     progress_callback: Callable[[int, int], None] | None = None,
+    verifying_callback: Callable[[], None] | None = None,
 ) -> Path:
     update_dir = _update_dir()
     update_dir.mkdir(parents=True, exist_ok=True)
     target = update_dir / info.installer_filename
-    if target.is_file() and _sha256_file(target).lower() == info.installer_sha256:
+    if target.is_file():
         if progress_callback:
             progress_callback(info.installer_size, info.installer_size)
-        return target
+        if verifying_callback:
+            verifying_callback()
+        if _sha256_file(target).lower() == info.installer_sha256:
+            return target
 
     partial = target.with_suffix(target.suffix + ".download")
     with requests.get(info.installer_url, stream=True, timeout=_TIMEOUT_SECONDS) as response:
@@ -74,6 +78,8 @@ def download_installer(
                     if progress_callback:
                         progress_callback(downloaded, total_size)
 
+    if verifying_callback:
+        verifying_callback()
     if _sha256_file(partial).lower() != info.installer_sha256:
         partial.unlink(missing_ok=True)
         raise RuntimeError("更新包校验失败，请稍后重试")
