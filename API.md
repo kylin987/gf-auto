@@ -250,6 +250,26 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/api/order_detail -Method Post -Cont
 }
 ```
 
+---
+
+## 5. 虚拟发货
+
+### POST /api/consign_dummy
+
+调用闲鱼卖家端虚拟发货接口。MTop 返回 `ret` 非 `SUCCESS` 时接口会返回失败。
+
+请求参数：
+
+| 字段 | 必填 | 类型 | 说明 |
+| --- | --- | --- | --- |
+| `orderId` | 是 | string | 闲鱼订单号，也接受 `order_id` |
+| `tradeText` | 否 | string | 发货说明，默认“已出票” |
+| `picList` | 否 | array | 物流凭证图片列表，默认空数组 |
+
+```bat
+curl -X POST http://127.0.0.1:8000/api/consign_dummy -H "Content-Type: application/json" -d "{\"orderId\":\"5127190491362214211\",\"tradeText\":\"已出票\",\"picList\":[]}"
+```
+
 `order` 为单个订单详情对象。
 
 错误码：

@@ -764,6 +764,17 @@ class XianyuLive:
             raise LookupError(f'未找到订单 {target}')
         return order
 
+    def consign_dummy_order(self, payload):
+        """本地 HTTP 接口调用的闲鱼虚拟发货入口。"""
+        order_id = payload.get('orderId') or payload.get('order_id')
+        if not order_id:
+            raise ValueError('缺少 orderId')
+        trade_text = str(payload.get('tradeText') or payload.get('trade_text') or '已出票')
+        pic_list = payload.get('picList')
+        if pic_list is None:
+            pic_list = payload.get('pic_list')
+        return self.xianyu.consign_dummy(str(order_id), trade_text, pic_list)
+
     def start_local_api(self, host='127.0.0.1', port=8000):
         if self.api_server is not None:
             return self.api_server

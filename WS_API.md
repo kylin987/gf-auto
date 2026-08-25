@@ -244,7 +244,23 @@ POST http://127.0.0.1:8000/api/adjust_price
 - `modifyFee`：改价后的金额，单位分。
 - `newTransportFee`：运费，单位分，当前传 `0`。
 
-### 8.4 task.ack
+### 8.4 虚拟发货
+
+任务类型：`task.xianyu.consign_dummy`
+
+客户端执行本地：
+
+```text
+POST http://127.0.0.1:8000/api/consign_dummy
+```
+
+请求核心字段：
+
+- `orderId`：闲鱼订单号。
+- `tradeText`：发货说明，默认“已出票”。
+- `picList`：物流凭证图片列表，当前业务传空数组。
+
+### 8.5 task.ack
 
 ```json
 {

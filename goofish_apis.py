@@ -594,6 +594,24 @@ class XianyuApis:
             value_type='string',
         )
 
+    def consign_dummy(self, order_id, trade_text='已出票', pic_list=None):
+        """卖家端虚拟发货；picList 按闲鱼接口要求传 JSON 字符串。"""
+        if isinstance(pic_list, str):
+            pic_list_value = pic_list
+        else:
+            pic_list_value = json.dumps(pic_list or [], ensure_ascii=False, separators=(',', ':'))
+        data_val = json.dumps({
+            'orderId': str(order_id),
+            'tradeText': str(trade_text or '已出票'),
+            'picList': pic_list_value,
+            'newUnconsign': True,
+        }, ensure_ascii=False, separators=(',', ':'))
+        return self._seller_mtop_post(
+            'mtop.taobao.idle.logistics.merchant.consign.dummy',
+            data_val,
+            spm_cnt='a21107h.42831410.0.0',
+        )
+
 
     def get_public_channel(self, title, images_info):
         headers = {
