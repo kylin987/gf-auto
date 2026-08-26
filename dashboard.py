@@ -389,7 +389,7 @@ class XianyuDesktopApp:
         text.tag_configure('time', foreground=C['muted'])
         text.tag_configure('error', foreground=C['red'])
         text.tag_configure('ok', foreground=C['green'])
-        text.tag_configure('order', foreground=C['yellow_deep'])
+        text.tag_configure('order', foreground='#0d9488')
         scroll = tk.Scrollbar(frame, command=text.yview)
         text.configure(yscrollcommand=scroll.set)
         text.pack(side='left', fill='both', expand=True)

@@ -421,7 +421,7 @@ class XianyuDesktopApp:
         self.log_text.tag_configure('error', foreground=C['danger'])
         self.log_text.tag_configure('send', foreground=C['green'])
         self.log_text.tag_configure('receive', foreground='#2f6fb2')
-        self.log_text.tag_configure('order', foreground='#8a5a00')
+        self.log_text.tag_configure('order', foreground='#0d9488')
         scrollbar = tk.Scrollbar(log_body, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
         self.log_text.pack(side='left', fill='both', expand=True)
