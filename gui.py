@@ -588,11 +588,11 @@ class XianyuDesktopApp:
             return 'error'
         if '发送' in message or '改价完成' in message:
             return 'send'
-        if '收到' in message or '上报网关' in message:
+        if '收到' in message or '到达' in message or '上报网关' in message:
             return 'receive'
         if '订单' in message:
             return 'order'
-        return 'normal'
+        return ''
 
     def _clear_log(self):
         self.log_text.configure(state='normal')
