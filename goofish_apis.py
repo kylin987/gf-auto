@@ -366,6 +366,19 @@ class XianyuApis:
                 expires=cookie.expires,
             )
 
+    def export_cookies(self):
+        """导出当前会话的有效闲鱼 Cookie，供客户端持久化后下次自动恢复。"""
+        names = {
+            cookie.name
+            for cookie in self.session.cookies
+            if cookie.name and ('.goofish.com' in (cookie.domain or '') or '.mmstat.com' in (cookie.domain or ''))
+        }
+        return {
+            name: value
+            for name in names
+            if (value := self._cookie_value(name))
+        }
+
     def get_token(self, retried=False):
         headers = {
             "Host": "h5api.m.goofish.com",

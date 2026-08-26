@@ -93,6 +93,8 @@ class XianyuLive:
         self._reconnect_event = threading.Event()
         self._stop_event = threading.Event()
         self._relogin_lock = threading.Lock()
+        self._login_state_lock = threading.RLock()
+        self._login_valid = False
         self._seen_structures = set()
         self._seen_protocol_frames = set()
         self._seen_parse_failures = set()
@@ -109,6 +111,20 @@ class XianyuLive:
 
     def save_cookies(self):
         self.cookie_store.save(self.cookies, self.user_agent, self.access_token, self.device_id)
+
+    def is_login_ready(self):
+        """供网关心跳读取的本地状态，不能在 15 秒心跳内请求闲鱼接口。"""
+        with self._login_state_lock:
+            return bool(self._login_valid and self.myid and self.access_token)
+
+    def _set_login_invalid(self):
+        with self._login_state_lock:
+            self._login_valid = False
+
+    def _sync_saved_session(self):
+        self.cookies = self.xianyu.export_cookies() or self.cookies
+        self.myid = self.cookies.get('unb', self.myid)
+        self.save_cookies()
 
     def current_chrome_account(self):
         return {
@@ -382,20 +398,43 @@ class XianyuLive:
         }
 
     def check_login(self):
-        """检查当前 cookie 是否有效，同时起到刷新登录态的作用。"""
+        """检查 Cookie 和 IM token 是否仍可用，并把服务端刷新的 Cookie 持久化。"""
         if not self.cookies or not self.cookies.get('_m_h5_tk'):
+            self._set_login_invalid()
             return False
         try:
             result = self.xianyu.refresh_token()
         except Exception as exc:
             logger.warning(f'登录态检查失败: {exc}')
+            self._set_login_invalid()
             return False
         ret = result.get('ret') or []
         ret_text = ' '.join(str(item) for item in ret)
         if 'RGV587_ERROR' in ret_text or 'SM::' in ret_text:
             logger.warning('刷新登录态被风控拦截，登录态仍视为有效')
+            with self._login_state_lock:
+                self._login_valid = bool(self.myid and self.access_token)
             return True
-        return any('SUCCESS' in str(item) for item in ret)
+        if not any('SUCCESS' in str(item) for item in ret):
+            self._set_login_invalid()
+            return False
+        try:
+            token_data = self.xianyu.get_token()
+            token_ret = token_data.get('ret') or []
+            token = str((token_data.get('data') or {}).get('accessToken') or '')
+        except Exception as exc:
+            logger.warning(f'IM token 检查失败: {exc}')
+            self._set_login_invalid()
+            return False
+        if not token or not any('SUCCESS' in str(item) for item in token_ret):
+            logger.warning('IM token 已失效，需要重新登录')
+            self._set_login_invalid()
+            return False
+        with self._login_state_lock:
+            self.access_token = token
+            self._login_valid = True
+            self._sync_saved_session()
+        return True
 
     def ensure_login(self, force=False):
         """优先使用本地保存的 cookie，失效时打开 Chrome 手动登录并自动保存。"""
@@ -429,19 +468,55 @@ class XianyuLive:
         self.save_cookies()
         self.myid = self.cookies['unb']
         self.xianyu = XianyuApis(self.cookies, self.device_id, user_agent=self.user_agent)
+        with self._login_state_lock:
+            self._login_valid = True
         logger.info(f"登录成功: {self.cookies.get('tracknick')}")
         self._notify_chrome_account()
         return True
 
-    def relogin(self):
+    async def _close_im_websocket(self):
+        websocket = self.ws
+        if websocket is None:
+            return
+        try:
+            await websocket.close(code=1000, reason='refresh xianyu login')
+        except Exception:
+            pass
+
+    def _request_im_reconnect(self):
+        self._reconnect_event.set()
+        loop = self.loop
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(self._close_im_websocket(), loop)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_im_auth_rejected(message):
+        if not isinstance(message, dict):
+            return False
+        code = str(message.get('code') or '').strip()
+        lwp = str(message.get('lwp') or '').strip()
+        body = str(message.get('body') or '')
+        return (
+            lwp in {'/push/kickout', '/push/logout'}
+            or code in {'401', '403'}
+            or '其他设备登录' in body
+            or '登录已失效' in body
+        )
+
+    def relogin(self, reason=''):
         """登录态失效时重新走 Chrome 登录流程，成功后触发 WebSocket 重连。"""
         with self._relogin_lock:
-            logger.warning('登录态已失效，开始重新登录')
+            self._set_login_invalid()
+            suffix = f'：{reason}' if reason else ''
+            logger.warning(f'登录态已失效，开始重新登录{suffix}')
             if not self.ensure_login(force=True):
                 logger.error('重新登录失败，等待下次心跳重试')
                 return False
             logger.info('重新登录成功，触发 WebSocket 重连')
-            self._reconnect_event.set()
+            self._request_im_reconnect()
             return True
 
     async def list_all_conversations(self, cid):
@@ -940,7 +1015,7 @@ class XianyuLive:
             ws_url=ws_url,
             store_id=self.store_id or None,
             instance_id=self.instance_id,
-            chrome_logged_in=lambda: bool(self.myid and self.check_login()),
+            chrome_logged_in=self.is_login_ready,
             reply_url=f'http://{host}:{port}/api/reply',
             stop_event=self._stop_event,
         )
@@ -974,6 +1049,13 @@ class XianyuLive:
                             if msg_lwp or (msg_code is not None and msg_code != 200):
                                 body_summary = str(message.get('body'))[:300]
                                 logger.info(f'WS 服务端消息: lwp={msg_lwp} code={msg_code} body={body_summary}')
+                            if self._is_im_auth_rejected(message):
+                                logger.warning('闲鱼 IM 登录被服务端拒绝，立即刷新 Chrome 登录态')
+                                await asyncio.to_thread(
+                                    self.relogin,
+                                    f'lwp={msg_lwp or "-"} code={msg_code if msg_code is not None else "-"}',
+                                )
+                                break
                             if msg_lwp == '/s/sync':
                                 asyncio.create_task(self._sync_ack_flow(websocket))
                             ack = {
