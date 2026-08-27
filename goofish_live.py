@@ -548,6 +548,22 @@ class XianyuLive:
             self._request_im_reconnect()
             return True
 
+    def refresh_login_for_expired_task_token(self, action):
+        """Refresh once for an MTop token rejection before retrying the task."""
+        with self._relogin_lock:
+            if self.check_login():
+                logger.info(f'{action}检测到 token 过期，已静默刷新登录态并重试')
+                self._request_im_reconnect()
+                return True
+
+            logger.warning(f'{action}检测到 token 过期，静默刷新失败，尝试重新获取 Chrome 登录态')
+            if not self.ensure_login(force=True):
+                logger.error(f'{action}登录态刷新失败，当前任务不再重复执行')
+                return False
+            logger.info(f'{action}重新获取登录态成功，正在重试')
+            self._request_im_reconnect()
+            return True
+
     async def list_all_conversations(self, cid):
         headers = {
             "Cookie": get_session_cookies_str(self.xianyu.session),
@@ -903,7 +919,10 @@ class XianyuLive:
         new_transport_fee = pick('new_transport_fee', 'newTransportFee')
         if order_id is None or modify_fee is None or new_transport_fee is None:
             raise ValueError('缺少 order_id、modify_fee 或 new_transport_fee')
-        return self.xianyu.adjust_order_price(str(order_id), str(modify_fee), str(new_transport_fee))
+        return self._call_seller_api_with_token_retry(
+            '修改订单价格',
+            lambda: self.xianyu.adjust_order_price(str(order_id), str(modify_fee), str(new_transport_fee)),
+        )
 
     def get_order_detail(self, payload):
         """本地 HTTP 接口调用的订单查询入口，返回单个订单详情。"""
@@ -912,7 +931,10 @@ class XianyuLive:
             order_id = payload.get('order_id')
         if order_id is None:
             raise ValueError('缺少 orderId')
-        result = self.xianyu.get_order_detail(str(order_id))
+        result = self._call_seller_api_with_token_retry(
+            '查询订单详情',
+            lambda: self.xianyu.get_order_detail(str(order_id)),
+        )
         ret = result.get('ret') or []
         if ret and not any('SUCCESS' in str(item) for item in ret):
             raise RuntimeError(f'查询订单失败: {ret}')
@@ -937,7 +959,10 @@ class XianyuLive:
         pic_list = payload.get('picList')
         if pic_list is None:
             pic_list = payload.get('pic_list')
-        return self.xianyu.consign_dummy(str(order_id), trade_text, pic_list)
+        return self._call_seller_api_with_token_retry(
+            '闲鱼虚拟发货',
+            lambda: self.xianyu.consign_dummy(str(order_id), trade_text, pic_list),
+        )
 
     def cancel_order(self, payload):
         """本地 HTTP 接口调用的卖家取消订单入口。"""
@@ -945,7 +970,27 @@ class XianyuLive:
         if not order_id:
             raise ValueError('缺少 orderId')
         close_reason = str(payload.get('closeReason') or payload.get('close_reason') or '与买家协商一致')
-        return self.xianyu.close_order_by_seller(str(order_id), close_reason)
+        return self._call_seller_api_with_token_retry(
+            '闲鱼取消订单',
+            lambda: self.xianyu.close_order_by_seller(str(order_id), close_reason),
+        )
+
+    @staticmethod
+    def _is_task_token_expired(result):
+        if not isinstance(result, dict):
+            return False
+        ret = result.get('ret') or []
+        ret_items = ret if isinstance(ret, list) else [ret]
+        return any('TOKEN_EXPIRED' in str(item).upper() or 'TOKEN_EXOIRED' in str(item).upper() for item in ret_items)
+
+    def _call_seller_api_with_token_retry(self, action, request):
+        result = request()
+        if not self._is_task_token_expired(result):
+            return result
+        logger.warning(f'{action}返回 token 过期，刷新登录态后重试一次')
+        if not self.refresh_login_for_expired_task_token(action):
+            return result
+        return request()
 
     def start_local_api(self, host='127.0.0.1', port=8000):
         if self.api_server is not None:
