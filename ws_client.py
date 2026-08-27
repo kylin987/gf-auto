@@ -101,11 +101,14 @@ class GatewayClient:
         self.executor_generation = 0
 
     async def run(self):
+        reconnect_delay = 5
         while self.stop_event is None or not self.stop_event.is_set():
+            retry_delay = reconnect_delay
             try:
                 async with websockets.connect(self.ws_url) as ws:
                     self.ws = ws
                     await self._bind(ws)
+                    reconnect_delay = 5
                     self._heartbeat_task = asyncio.create_task(self._heartbeat(ws))
                     try:
                         async for message in ws:
@@ -116,12 +119,13 @@ class GatewayClient:
                             self._heartbeat_task.cancel()
                             self._heartbeat_task = None
             except Exception as exc:
-                logger.warning(f'插件网关连接异常：{exc}')
+                logger.warning(f'插件网关连接异常：{exc}；{retry_delay} 秒后重试')
+                reconnect_delay = min(reconnect_delay * 2, 60)
             finally:
                 self.ws = None
             if self.stop_event is not None and self.stop_event.is_set():
                 break
-            await asyncio.sleep(5)
+            await asyncio.sleep(retry_delay)
 
     async def _bind(self, ws):
         bind_id = 'bind_' + uuid.uuid4().hex[:12]

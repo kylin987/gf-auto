@@ -7,10 +7,12 @@ import os
 import sys
 import mimetypes
 import tempfile
+import socket
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from loguru import logger
+import requests
 import websockets
 from app_paths import default_cookie_file, default_log_dir
 from goofish_apis import XianyuApis, UA
@@ -50,6 +52,21 @@ def _ws_connect(uri, headers=None):
     if major >= 14:
         return websockets.connect(uri, additional_headers=headers)
     return websockets.connect(uri, extra_headers=headers)
+
+
+def _is_transient_network_error(exc):
+    """DNS and transport failures do not prove that the saved login expired."""
+    current = exc
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+                                socket.gaierror, TimeoutError)):
+            return True
+        if isinstance(current, OSError) and getattr(current, 'winerror', None) in {11001, 11002, 10051, 10060, 10065}:
+            return True
+        current = current.__cause__ or current.__context__
+    return 'getaddrinfo failed' in str(exc).lower()
 
 
 class XianyuLive:
@@ -405,6 +422,11 @@ class XianyuLive:
         try:
             result = self.xianyu.refresh_token()
         except Exception as exc:
+            if _is_transient_network_error(exc):
+                with self._login_state_lock:
+                    self._login_valid = bool(self.myid and self.access_token)
+                logger.warning(f'登录态检查网络不可达，保留当前登录态并等待下次检查: {exc}')
+                return self._login_valid
             logger.warning(f'登录态检查失败: {exc}')
             self._set_login_invalid()
             return False
@@ -416,6 +438,7 @@ class XianyuLive:
                 self._login_valid = bool(self.myid and self.access_token)
             return True
         if not any('SUCCESS' in str(item) for item in ret):
+            logger.warning(f'登录态刷新被服务端拒绝: {ret_text[:200] or "empty response"}')
             self._set_login_invalid()
             return False
         try:
@@ -423,11 +446,17 @@ class XianyuLive:
             token_ret = token_data.get('ret') or []
             token = str((token_data.get('data') or {}).get('accessToken') or '')
         except Exception as exc:
+            if _is_transient_network_error(exc):
+                with self._login_state_lock:
+                    self._login_valid = bool(self.myid and self.access_token)
+                logger.warning(f'IM token 检查网络不可达，保留当前登录态并等待下次检查: {exc}')
+                return self._login_valid
             logger.warning(f'IM token 检查失败: {exc}')
             self._set_login_invalid()
             return False
         if not token or not any('SUCCESS' in str(item) for item in token_ret):
-            logger.warning('IM token 已失效，需要重新登录')
+            token_ret_text = ' '.join(str(item) for item in token_ret)
+            logger.warning(f'IM token 已失效，需要重新登录: {token_ret_text[:200] or "empty response"}')
             self._set_login_invalid()
             return False
         with self._login_state_lock:
@@ -1021,7 +1050,9 @@ class XianyuLive:
         )
         self._ws_task = asyncio.create_task(self.ws_client.run())
 
+        reconnect_delay = 3
         while not self._stop_event.is_set():
+            retry_delay = reconnect_delay
             headers = {
                 "Cookie": get_session_cookies_str(self.xianyu.session),
                 "Host": "wss-goofish.dingtalk.com",
@@ -1039,6 +1070,7 @@ class XianyuLive:
                     logger.info('WebSocket 已连接，开始注册')
                     await self.init(websocket)
                     self._token_failures = 0
+                    reconnect_delay = 3
                     heartbeat_task = asyncio.create_task(self.heart_beat(websocket))
                     try:
                         async for message in websocket:
@@ -1096,6 +1128,9 @@ class XianyuLive:
                             pass
             except Exception as exc:
                 logger.error(f'WebSocket 连接/初始化失败: {exc}')
+                if _is_transient_network_error(exc):
+                    logger.warning(f'闲鱼 IM 网络连接异常，{retry_delay} 秒后重试')
+                    reconnect_delay = min(reconnect_delay * 2, 60)
                 if isinstance(exc, RuntimeError) and 'token' in str(exc):
                     self._token_failures += 1
                     if self._token_failures >= 3:
@@ -1109,7 +1144,7 @@ class XianyuLive:
                 self._reconnect_event.clear()
             if self._stop_event.is_set():
                 break
-            await asyncio.sleep(3)
+            await asyncio.sleep(retry_delay)
 
         if self._ws_task is not None:
             self._ws_task.cancel()
