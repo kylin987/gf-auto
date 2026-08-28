@@ -72,6 +72,19 @@ def _chrome_platform(user_agent):
     return '"Windows"'
 
 
+def is_token_expired_response(data):
+    if not isinstance(data, dict):
+        return False
+    ret = data.get('ret') or []
+    items = ret if isinstance(ret, list) else [ret]
+    return any(
+        'TOKEN_EXPIRED' in str(item).upper()
+        or 'TOKEN_EXOIRED' in str(item).upper()
+        or '令牌过期' in str(item)
+        for item in items
+    )
+
+
 _HERE = Path(__file__).resolve().parent
 
 
@@ -422,13 +435,12 @@ class XianyuApis:
         response = self.session.post(self.login_url, params=params, headers=headers, data=data)
         self._normalize_response_cookies(response)
         res_json = response.json()
-        if 'ret' in res_json and '令牌过期' in res_json['ret'][0]:
-            if not retried:
-                return self.get_token(retried=True)
+        if is_token_expired_response(res_json) and not retried:
+            return self.get_token(retried=True)
         return res_json
 
 
-    def refresh_token(self):
+    def refresh_token(self, retried=False):
         headers = {
             "accept": "application/json",
             "accept-language": "en,zh-CN;q=0.9,zh;q=0.8,zh-TW;q=0.7,ja;q=0.6",
@@ -471,6 +483,10 @@ class XianyuApis:
         response = self.session.post(self.refresh_token_url, headers=headers, params=params, data=data)
         self._normalize_response_cookies(response)
         res_json = response.json()
+        # MTOP token renewal is a two-request handshake: the expired response
+        # sets a fresh _m_h5_tk cookie, then the same request must be retried.
+        if is_token_expired_response(res_json) and not retried:
+            return self.refresh_token(retried=True)
         return res_json
 
 

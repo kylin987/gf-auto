@@ -85,7 +85,7 @@ class GatewayClient:
     """连接 yhs-plugin-gateway：登录后 bind、心跳、业务消息转发与回复。"""
 
     def __init__(self, token, ws_url=None, store_id=None, instance_id='', chrome_logged_in=None,
-                 reply_url='http://127.0.0.1:8000/api/reply', stop_event=None):
+                 reply_url='http://127.0.0.1:8000/api/reply', stop_event=None, outbox=None):
         self.token = token or ''
         self.ws_url = ws_url or os.environ.get('XY_WS_URL') or DEFAULT_WS_URL
         self.store_id = store_id
@@ -94,8 +94,12 @@ class GatewayClient:
         self.reply_url = reply_url
         self.api_base_url = reply_url.rsplit('/', 2)[0]
         self.stop_event = stop_event
+        self.outbox = outbox
         self.ws = None
         self._heartbeat_task = None
+        self._outbox_task = None
+        self._outbox_wakeup = asyncio.Event()
+        self._pending_event_acks = {}
         self._pending_claims = {}
         self._task_workers = set()
         self.executor_generation = 0
@@ -110,14 +114,20 @@ class GatewayClient:
                     await self._bind(ws)
                     reconnect_delay = 5
                     self._heartbeat_task = asyncio.create_task(self._heartbeat(ws))
+                    self._outbox_task = asyncio.create_task(self._run_outbox(ws))
                     try:
                         async for message in ws:
                             await self._handle_message(message)
                     finally:
                         await self._cancel_task_workers()
+                        if self._outbox_task is not None:
+                            self._outbox_task.cancel()
+                            await asyncio.gather(self._outbox_task, return_exceptions=True)
+                            self._outbox_task = None
                         if self._heartbeat_task is not None:
                             self._heartbeat_task.cancel()
                             self._heartbeat_task = None
+                        self._fail_pending_event_acks(ConnectionError('插件网关连接已断开'))
             except Exception as exc:
                 logger.warning(f'插件网关连接异常：{exc}；{retry_delay} 秒后重试')
                 reconnect_delay = min(reconnect_delay * 2, 60)
@@ -143,6 +153,10 @@ class GatewayClient:
                     executor = payload.get('executor') or {}
                     self.executor_generation = int(executor.get('generation') or 0)
                     logger.info('网关绑定成功')
+                    if self.outbox is not None:
+                        pending_count = await asyncio.to_thread(self.outbox.count, 'pending')
+                        if pending_count:
+                            logger.info(f'检测到 {pending_count} 条待补发买家事件，正在按顺序上报')
                     return
                 raise GatewayLoginError(payload.get('reason') or 'token无效或已过期')
 
@@ -160,25 +174,79 @@ class GatewayClient:
                 break
 
     async def send(self, data):
-        """把本地精简消息包装成 xianyu.message 发给网关。"""
-        if self.ws is None:
-            return
+        """Persist a buyer event first; the outbox worker sends it after bind."""
         payload = dict(data or {})
         if self.store_id is not None:
             payload['storeId'] = self.store_id
+        message_id = str(payload.get('messageId') or '').strip()
+        if not message_id:
+            raise ValueError('xianyu.message 缺少稳定 messageId')
         message = {
             'version': 'plugin.v1',
             'type': 'xianyu.message',
-            'id': 'msg_' + uuid.uuid4().hex[:16],
+            'id': message_id,
             'sentAt': datetime.now().astimezone().isoformat(),
             'payload': payload,
         }
-        try:
-            await self.ws.send(json.dumps(message, ensure_ascii=False))
-            logger.info(f'上报网关成功：{self._describe_platform_message(payload)}')
-        except Exception as exc:
-            logger.warning(f'上报网关失败：{exc}')
-            pass
+        if self.outbox is None:
+            raise RuntimeError('xianyu.message Outbox 未配置')
+        await asyncio.to_thread(self.outbox.enqueue, message_id, message)
+        if self.ws is None:
+            logger.warning(f'插件网关未连接，买家事件已保存等待补发：messageId={message_id}')
+        self._outbox_wakeup.set()
+        return True
+
+    async def _run_outbox(self, ws):
+        while True:
+            self._outbox_wakeup.clear()
+            try:
+                row = await asyncio.to_thread(self.outbox.oldest_pending)
+            except Exception as exc:
+                logger.warning(f'读取待补发买家事件失败：{exc}')
+                await asyncio.sleep(5)
+                continue
+            if row is None:
+                try:
+                    await asyncio.wait_for(self._outbox_wakeup.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            retry_wait = max(0, row['next_attempt_at'] - datetime.now().timestamp())
+            if retry_wait > 0:
+                try:
+                    await asyncio.wait_for(self._outbox_wakeup.wait(), timeout=retry_wait)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            message_id = row['message_id']
+            future = asyncio.get_running_loop().create_future()
+            self._pending_event_acks[message_id] = future
+            try:
+                await ws.send(json.dumps(row['payload'], ensure_ascii=False))
+                ack = await asyncio.wait_for(future, timeout=20)
+                if ack.get('accepted') is True:
+                    await asyncio.to_thread(self.outbox.remove, message_id)
+                    logger.info(
+                        f'上报网关成功：{self._describe_platform_message(row["payload"].get("payload") or {})}'
+                    )
+                else:
+                    reason = ack.get('reason') or ack.get('message') or '网关拒收'
+                    await asyncio.to_thread(self.outbox.mark_blocked, message_id, reason)
+                    logger.warning(f'网关拒收买家事件：messageId={message_id} 原因={reason}')
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await asyncio.to_thread(self.outbox.mark_failed, message_id, exc)
+                logger.warning(f'上报网关失败，消息已保留等待补发：messageId={message_id} {exc}')
+            finally:
+                self._pending_event_acks.pop(message_id, None)
+
+    def _fail_pending_event_acks(self, exc):
+        futures = list(self._pending_event_acks.values())
+        self._pending_event_acks.clear()
+        for future in futures:
+            if not future.done():
+                future.set_exception(exc)
 
     async def _handle_message(self, raw):
         try:
@@ -191,6 +259,12 @@ class GatewayClient:
             executor = payload.get('executor') or {}
             if executor.get('generation'):
                 self.executor_generation = int(executor['generation'])
+            return
+        if msg_type == 'xianyu.message.ack':
+            event_id = str(payload.get('eventId') or '')
+            future = self._pending_event_acks.get(event_id)
+            if future is not None and not future.done():
+                future.set_result(payload)
             return
         if msg_type == 'task.message.claim.ack':
             future = self._pending_claims.pop(str(data.get('requestId') or ''), None)

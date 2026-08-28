@@ -1,5 +1,6 @@
 import base64
 import json
+import hashlib
 import asyncio
 import threading
 import time
@@ -15,6 +16,7 @@ from loguru import logger
 import requests
 import websockets
 from app_paths import default_cookie_file, default_log_dir
+from event_outbox import EventOutbox
 from goofish_apis import XianyuApis, UA
 
 from utils.goofish_utils import generate_mid, generate_uuid, trans_cookies, generate_device_id, decrypt, \
@@ -121,6 +123,8 @@ class XianyuLive:
         self._media_upload_lock = threading.RLock()
         self._last_sync_log_at = 0.0
         self._sync_ack_running = False
+        self._sync_ack_pending = False
+        self.outbox = EventOutbox(Path(self.cookie_file).resolve().parent / 'event_outbox.sqlite3')
         self.ws_client = None
         self._ws_task = None
         self.api_server = None
@@ -414,6 +418,52 @@ class XianyuLive:
             '_platform': str(reminder.get('_platform') or ''),
         }
 
+    @staticmethod
+    def _source_message_id(message):
+        """Use the IM message identifier when present; avoid business/user IDs."""
+        preferred_keys = {'messageId', 'message_id', 'msgId', 'msg_id', 'uuid', 'bizMessageId'}
+        stack = [message]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                for key, value in current.items():
+                    if key in preferred_keys and value not in (None, '') and not isinstance(value, (dict, list)):
+                        return str(value)
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(current, list):
+                stack.extend(current)
+        return ''
+
+    def _stable_message_id(self, message, simplified):
+        source_id = self._source_message_id(message)
+        if source_id:
+            raw = f'{self.store_id}|{source_id}'
+        else:
+            fields = (
+                self.store_id,
+                simplified.get('cid'),
+                simplified.get('senderUserId'),
+                simplified.get('time'),
+                simplified.get('contentType'),
+                simplified.get('text'),
+                simplified.get('url'),
+                simplified.get('orderId'),
+                simplified.get('itemId'),
+            )
+            raw = '|'.join(str(value or '') for value in fields)
+        return 'fish_' + hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+    def _seconds_until_login_check(self, now=None):
+        now = time.time() if now is None else float(now)
+        interval = max(30, int(self.heartbeat_interval))
+        cookie = str(self.xianyu.export_cookies().get('_m_h5_tk') or self.cookies.get('_m_h5_tk') or '')
+        try:
+            expires_at = int(cookie.rsplit('_', 1)[1]) / 1000
+        except (IndexError, TypeError, ValueError):
+            return interval
+        return max(60, min(interval, int(expires_at - now - 300)))
+
     def check_login(self):
         """检查 Cookie 和 IM token 是否仍可用，并把服务端刷新的 Cookie 持久化。"""
         if not self.cookies or not self.cookies.get('_m_h5_tk'):
@@ -459,10 +509,14 @@ class XianyuLive:
             logger.warning(f'IM token 已失效，需要重新登录: {token_ret_text[:200] or "empty response"}')
             self._set_login_invalid()
             return False
+        previous_token = self.access_token
         with self._login_state_lock:
             self.access_token = token
             self._login_valid = True
             self._sync_saved_session()
+        if previous_token and token != previous_token and self.ws is not None:
+            logger.info('闲鱼 IM token 已更新，正在主动重连以应用新 token')
+            self._request_im_reconnect()
         return True
 
     def ensure_login(self, force=False):
@@ -1039,15 +1093,18 @@ class XianyuLive:
 
     async def _sync_ack_flow(self, websocket):
         """按 SDK 流程：/s/sync 后先 getState 再 ackDiff，保持长连接。"""
+        self._sync_ack_pending = True
         if self._sync_ack_running:
             return
         self._sync_ack_running = True
         try:
-            state_resp = await self._request(websocket, '/r/SyncStatus/getState', [{'topic': 'sync'}], timeout=5)
-            body = state_resp.get('body')
-            if body:
-                await self._request(websocket, '/r/SyncStatus/ackDiff', [body], timeout=5)
-                logger.info(f'sync ack 完成: {body}')
+            while self._sync_ack_pending:
+                self._sync_ack_pending = False
+                state_resp = await self._request(websocket, '/r/SyncStatus/getState', [{'topic': 'sync'}], timeout=5)
+                body = state_resp.get('body')
+                if body:
+                    await self._request(websocket, '/r/SyncStatus/ackDiff', [body], timeout=5)
+                    logger.info(f'sync ack 完成: {body}')
         except Exception as exc:
             logger.warning(f'sync ack 失败: {exc}')
         finally:
@@ -1066,7 +1123,7 @@ class XianyuLive:
 
     def user_alive(self):
         while not self._stop_event.is_set():
-            if self._stop_event.wait(self.heartbeat_interval):
+            if self._stop_event.wait(self._seconds_until_login_check()):
                 break
             if not self.check_login():
                 self.relogin()
@@ -1092,6 +1149,7 @@ class XianyuLive:
             chrome_logged_in=self.is_login_ready,
             reply_url=f'http://{host}:{port}/api/reply',
             stop_event=self._stop_event,
+            outbox=self.outbox,
         )
         self._ws_task = asyncio.create_task(self.ws_client.run())
 
@@ -1127,14 +1185,12 @@ class XianyuLive:
                                 body_summary = str(message.get('body'))[:300]
                                 logger.info(f'WS 服务端消息: lwp={msg_lwp} code={msg_code} body={body_summary}')
                             if self._is_im_auth_rejected(message):
-                                logger.warning('闲鱼 IM 登录被服务端拒绝，立即刷新 Chrome 登录态')
+                                logger.warning('闲鱼 IM 登录被服务端拒绝，正在刷新 Chrome 登录态')
                                 await asyncio.to_thread(
                                     self.relogin,
                                     f'lwp={msg_lwp or "-"} code={msg_code if msg_code is not None else "-"}',
                                 )
                                 break
-                            if msg_lwp == '/s/sync':
-                                asyncio.create_task(self._sync_ack_flow(websocket))
                             ack = {
                                 "code": 200,
                                 "headers": {
@@ -1165,6 +1221,8 @@ class XianyuLive:
                                 continue
 
                             await self.handle_message(message, websocket)
+                            if msg_lwp == '/s/sync':
+                                asyncio.create_task(self._sync_ack_flow(websocket))
                     finally:
                         heartbeat_task.cancel()
                         try:
@@ -1227,8 +1285,6 @@ class XianyuLive:
                 if self._is_self_message(parsed):
                     continue
                 simplified = self._simplify_chat_message(parsed)
-                self._save_raw_message(simplified)
-                logger.info(f'收到买家消息：{self._describe_simplified_message(simplified)}')
                 content_type = int(simplified.get('contentType') or 0)
                 cid = str(simplified.get('cid') or '')
                 order_id = str(simplified.get('orderId') or '')
@@ -1236,6 +1292,9 @@ class XianyuLive:
                     self._recent_order_ids_by_cid[cid] = order_id
                 elif content_type == 6 and not order_id and cid:
                     simplified['orderId'] = self._recent_order_ids_by_cid.get(cid, '')
+                simplified['messageId'] = self._stable_message_id(parsed, simplified)
+                self._save_raw_message(simplified)
+                logger.info(f'收到买家消息：{self._describe_simplified_message(simplified)}')
                 if content_type in (1, 2, 3, 4, 5, 6) and self.ws_client is not None:
                     await self.ws_client.send(simplified)
             else:
