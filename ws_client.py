@@ -75,7 +75,7 @@ def gateway_login(username, password, device_id=None):
         data = response.json()
     except Exception as exc:
         raise GatewayLoginError(f'登录请求失败：{exc}') from exc
-    if data.get('code') != 0 or not data.get('data'):
+    if data.get('code') != 200 or not data.get('data'):
         raise GatewayLoginError(str(data.get('msg') or data))
     save_login_config(username=username, password=password, device_id=device_id)
     return data['data']
