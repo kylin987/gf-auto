@@ -134,6 +134,8 @@ class GatewayAuthManager:
 class GatewayClient:
     """连接 yhs-plugin-gateway：登录后 bind、心跳、业务消息转发与回复。"""
 
+    BUYER_CHAT_MAX_AGE_SECONDS = 600
+
     def __init__(self, token, ws_url=None, store_id=None, instance_id='', chrome_logged_in=None,
                  reply_url='http://127.0.0.1:8000/api/reply', stop_event=None, outbox=None,
                  auth_manager=None):
@@ -297,6 +299,11 @@ class GatewayClient:
                 except asyncio.TimeoutError:
                     pass
                 continue
+            if self._is_expired_buyer_chat(row):
+                message_id = row['message_id']
+                await asyncio.to_thread(self.outbox.remove, message_id)
+                logger.warning(f'已丢弃超过10分钟的买家聊天补发事件：messageId={message_id}')
+                continue
             retry_wait = max(0, row['next_attempt_at'] - datetime.now().timestamp())
             if retry_wait > 0:
                 try:
@@ -326,6 +333,31 @@ class GatewayClient:
                 logger.warning(f'上报网关失败，消息已保留等待补发：messageId={message_id} {exc}')
             finally:
                 self._pending_event_acks.pop(message_id, None)
+
+    @classmethod
+    def _is_expired_buyer_chat(cls, row, now=None):
+        message = row.get('payload') if isinstance(row, dict) else {}
+        payload = message.get('payload') if isinstance(message, dict) else {}
+        try:
+            content_type = int(payload.get('contentType') or 0)
+        except (TypeError, ValueError):
+            return False
+        if content_type not in (1, 2):
+            return False
+
+        event_time = 0.0
+        try:
+            source_time = float(payload.get('time') or 0)
+            event_time = source_time / 1000 if source_time > 100000000000 else source_time
+        except (TypeError, ValueError):
+            pass
+        if event_time <= 0:
+            try:
+                event_time = datetime.fromisoformat(str(message.get('sentAt') or '').replace('Z', '+00:00')).timestamp()
+            except (TypeError, ValueError):
+                event_time = float(row.get('create_time') or 0)
+        current_time = datetime.now().timestamp() if now is None else float(now)
+        return event_time > 0 and current_time - event_time > cls.BUYER_CHAT_MAX_AGE_SECONDS
 
     def _fail_pending_event_acks(self, exc):
         futures = list(self._pending_event_acks.values())

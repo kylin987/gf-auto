@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -96,6 +97,40 @@ class EventOutboxTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(outbox.count('blocked'), 1)
         self.assertEqual(outbox.count('pending'), 0)
+
+    async def test_expired_chat_is_removed_without_sending(self):
+        outbox = EventOutbox(self.database_path)
+        client = GatewayClient('token', store_id=203, outbox=outbox)
+        await client.send({
+            'messageId': 'fish_old_image',
+            'contentType': 2,
+            'time': str(int((time.time() - 601) * 1000)),
+            'url': 'https://example.test/old.jpg',
+        })
+
+        websocket = FakeGatewayWebSocket(client)
+        worker = asyncio.create_task(client._run_outbox(websocket))
+        for _ in range(50):
+            if outbox.count() == 0:
+                break
+            await asyncio.sleep(0.01)
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+        self.assertEqual(outbox.count(), 0)
+        self.assertEqual(websocket.messages, [])
+
+    def test_order_event_never_expires_from_chat_outbox(self):
+        old_time = time.time() - 86400
+        row = {
+            'create_time': old_time,
+            'payload': {
+                'sentAt': '2026-08-30T00:00:00+08:00',
+                'payload': {'contentType': 4, 'time': str(int(old_time * 1000))},
+            },
+        }
+
+        self.assertFalse(GatewayClient._is_expired_buyer_chat(row, now=time.time()))
 
 
 if __name__ == '__main__':
