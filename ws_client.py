@@ -1,6 +1,9 @@
 import asyncio
+import base64
 import json
 import os
+import threading
+import time
 import uuid
 from datetime import datetime
 from io import BytesIO
@@ -19,6 +22,22 @@ LOGIN_CONFIG_FILE = os.path.join(LOGIN_CONFIG_DIR, 'login.json')
 
 class GatewayLoginError(Exception):
     pass
+
+
+def _gateway_token_expires_at(token):
+    """Read JWT expiry locally only for refresh scheduling; the gateway still verifies it."""
+    try:
+        payload = str(token or '').split('.')[1]
+        payload += '=' * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode('ascii')).decode('utf-8'))
+        return int(claims.get('exp') or 0)
+    except (IndexError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        return 0
+
+
+def gateway_token_expires_soon(token, leeway=300):
+    expires_at = _gateway_token_expires_at(token)
+    return bool(expires_at and expires_at <= time.time() + max(0, int(leeway)))
 
 
 def load_login_config():
@@ -81,11 +100,43 @@ def gateway_login(username, password, device_id=None):
     return data['data']
 
 
+class GatewayAuthManager:
+    """Refresh one shared gateway login for all store instances in this client."""
+
+    def __init__(self, auth=None):
+        self.auth = auth if isinstance(auth, dict) else {}
+        self._lock = threading.Lock()
+
+    def refresh(self, stale_token='', force=False):
+        with self._lock:
+            current_token = str(self.auth.get('accessToken') or '')
+            if (stale_token and current_token and current_token != stale_token
+                    and not gateway_token_expires_soon(current_token)):
+                return dict(self.auth)
+            if not force and current_token and not gateway_token_expires_soon(current_token):
+                return dict(self.auth)
+
+            config = load_login_config()
+            username = str(config.get('username') or '').strip()
+            password = str(config.get('password') or '')
+            if not username or not password:
+                raise GatewayLoginError('未保存子账号或密码，无法自动刷新网关登录态')
+
+            refreshed = gateway_login(
+                username,
+                password,
+                device_id=str(config.get('deviceId') or '') or None,
+            )
+            self.auth.update(refreshed)
+            return dict(self.auth)
+
+
 class GatewayClient:
     """连接 yhs-plugin-gateway：登录后 bind、心跳、业务消息转发与回复。"""
 
     def __init__(self, token, ws_url=None, store_id=None, instance_id='', chrome_logged_in=None,
-                 reply_url='http://127.0.0.1:8000/api/reply', stop_event=None, outbox=None):
+                 reply_url='http://127.0.0.1:8000/api/reply', stop_event=None, outbox=None,
+                 auth_manager=None):
         self.token = token or ''
         self.ws_url = ws_url or os.environ.get('XY_WS_URL') or DEFAULT_WS_URL
         self.store_id = store_id
@@ -95,6 +146,7 @@ class GatewayClient:
         self.api_base_url = reply_url.rsplit('/', 2)[0]
         self.stop_event = stop_event
         self.outbox = outbox
+        self.auth_manager = auth_manager
         self.ws = None
         self._heartbeat_task = None
         self._outbox_task = None
@@ -103,12 +155,15 @@ class GatewayClient:
         self._pending_claims = {}
         self._task_workers = set()
         self.executor_generation = 0
+        self._next_auth_refresh_at = 0
 
     async def run(self):
         reconnect_delay = 5
         while self.stop_event is None or not self.stop_event.is_set():
             retry_delay = reconnect_delay
             try:
+                if gateway_token_expires_soon(self.token):
+                    await self._refresh_gateway_auth(force=False)
                 async with websockets.connect(self.ws_url) as ws:
                     self.ws = ws
                     await self._bind(ws)
@@ -128,6 +183,16 @@ class GatewayClient:
                             self._heartbeat_task.cancel()
                             self._heartbeat_task = None
                         self._fail_pending_event_acks(ConnectionError('插件网关连接已断开'))
+            except GatewayLoginError as exc:
+                try:
+                    await self._refresh_gateway_auth(force=True)
+                    logger.info('插件网关登录态已自动刷新，正在重新连接')
+                    reconnect_delay = 5
+                    retry_delay = 0
+                except Exception as refresh_exc:
+                    logger.warning(f'插件网关登录态自动刷新失败：{refresh_exc}')
+                    logger.warning(f'插件网关连接异常：{exc}；{retry_delay} 秒后重试')
+                    reconnect_delay = min(reconnect_delay * 2, 60)
             except Exception as exc:
                 logger.warning(f'插件网关连接异常：{exc}；{retry_delay} 秒后重试')
                 reconnect_delay = min(reconnect_delay * 2, 60)
@@ -164,6 +229,14 @@ class GatewayClient:
         while True:
             await asyncio.sleep(15)
             try:
+                if gateway_token_expires_soon(self.token) and time.time() >= self._next_auth_refresh_at:
+                    try:
+                        await self._refresh_gateway_auth(force=False)
+                    except Exception as exc:
+                        self._next_auth_refresh_at = time.time() + 60
+                        logger.warning(f'插件网关登录态提前刷新失败：{exc}；60 秒后重试')
+                    else:
+                        logger.info('插件网关登录态已提前刷新，后续重连将使用新 token')
                 await ws.send(json.dumps({
                     'version': 'plugin.v1',
                     'type': 'client.heartbeat',
@@ -172,6 +245,19 @@ class GatewayClient:
                 }))
             except Exception:
                 break
+
+    async def _refresh_gateway_auth(self, force):
+        if self.auth_manager is None:
+            raise GatewayLoginError('未配置网关自动登录信息')
+        stale_token = self.token
+        auth = await asyncio.to_thread(self.auth_manager.refresh, stale_token, force)
+        token = str(auth.get('accessToken') or '')
+        if not token:
+            raise GatewayLoginError('刷新网关登录态未返回 accessToken')
+        self.token = token
+        self.ws_url = str(auth.get('wsUrl') or self.ws_url)
+        self._next_auth_refresh_at = 0
+        return token != stale_token
 
     async def send(self, data):
         """Persist a buyer event first; the outbox worker sends it after bind."""

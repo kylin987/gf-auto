@@ -137,8 +137,11 @@ class XianyuDesktopApp:
     """多闲鱼店铺实例的桌面工作台。"""
 
     def __init__(self, root, gateway_auth=None):
+        from ws_client import GatewayAuthManager
+
         self.root = root
         self.gateway_auth = gateway_auth or {}
+        self.gateway_auth_manager = GatewayAuthManager(self.gateway_auth)
         self.instances = load_instances()
         self.selected_id = self.instances[0]['id'] if self.instances else ''
         self.lives = {}
@@ -474,6 +477,7 @@ class XianyuDesktopApp:
                 live = XianyuLive(
                     cookie_file=instance_cookie_file(instance['id']),
                     gateway_auth=self.gateway_auth,
+                    gateway_auth_manager=self.gateway_auth_manager,
                     account_changed_callback=lambda account, item=instance: self._chrome_account_changed(item, account),
                     store_id=instance['storeId'], instance_id=instance['id'], instance_name=instance.get('name') or '',
                     chrome_profile_dir=instance_chrome_profile_dir(instance['id']),

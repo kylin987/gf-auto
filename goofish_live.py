@@ -73,7 +73,7 @@ def _is_transient_network_error(exc):
 
 class XianyuLive:
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
-                 heartbeat_interval=None, gateway_auth=None, account_changed_callback=None,
+                 heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
                  store_id=None, instance_id='', instance_name='', chrome_profile_dir=None,
                  local_api_port=8000, log_dir=None):
         self.base_url = 'wss://wss-goofish.dingtalk.com/'
@@ -83,6 +83,7 @@ class XianyuLive:
         self.heartbeat_interval = heartbeat_interval or int(os.environ.get('XY_HEARTBEAT_INTERVAL', '600'))
         self.cookie_store = CookieStore(self.cookie_file)
         self.gateway_auth = gateway_auth or {}
+        self.gateway_auth_manager = gateway_auth_manager
         self.account_changed_callback = account_changed_callback
         self.store_id = int(store_id or 0)
         self.instance_id = str(instance_id or '')
@@ -1128,8 +1129,12 @@ class XianyuLive:
             if not self.check_login():
                 self.relogin()
 
+    def _run_user_alive(self):
+        with logger.contextualize(instance_id=self.instance_id):
+            self.user_alive()
+
     async def main(self):
-        threading.Thread(target=self.user_alive, daemon=True, name='xianyu-heartbeat').start()
+        threading.Thread(target=self._run_user_alive, daemon=True, name='xianyu-heartbeat').start()
         self.loop = asyncio.get_running_loop()
         host = os.environ.get('XY_API_HOST', '127.0.0.1')
         port = self.local_api_port
@@ -1139,6 +1144,9 @@ class XianyuLive:
             logger.error(f'本地接口启动失败: {exc}')
 
         auth = self.gateway_auth or {}
+        if self.gateway_auth_manager is None:
+            from ws_client import GatewayAuthManager
+            self.gateway_auth_manager = GatewayAuthManager(auth)
         token = auth.get('accessToken') or os.environ.get('XY_GATEWAY_TOKEN') or ''
         ws_url = auth.get('wsUrl') or os.environ.get('XY_WS_URL') or None
         self.ws_client = GatewayClient(
@@ -1150,6 +1158,7 @@ class XianyuLive:
             reply_url=f'http://{host}:{port}/api/reply',
             stop_event=self._stop_event,
             outbox=self.outbox,
+            auth_manager=self.gateway_auth_manager,
         )
         self._ws_task = asyncio.create_task(self.ws_client.run())
 
