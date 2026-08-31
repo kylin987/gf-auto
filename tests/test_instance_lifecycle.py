@@ -104,6 +104,7 @@ class InstanceLifecycleTest(unittest.TestCase):
         live._login_state_lock = threading.RLock()
         live._stop_event = threading.Event()
         live._login_revision = 2
+        live._recover_saved_im_login = Mock(return_value=False)
         live.ensure_login = Mock(return_value=True)
         live._set_login_invalid = Mock()
         live._request_im_reconnect = Mock()
@@ -111,6 +112,38 @@ class InstanceLifecycleTest(unittest.TestCase):
         self.assertTrue(live.relogin('code=401', expected_revision=2))
         live.ensure_login.assert_called_once_with(force=True)
         live._request_im_reconnect.assert_called_once_with()
+
+    def test_current_im_401_recovers_saved_cookie_before_opening_chrome(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._relogin_lock = threading.Lock()
+        live._login_state_lock = threading.RLock()
+        live._stop_event = threading.Event()
+        live._login_revision = 2
+        live._recover_saved_im_login = Mock(return_value=True)
+        live.ensure_login = Mock(return_value=True)
+        live._set_login_invalid = Mock()
+        live._request_im_reconnect = Mock()
+
+        self.assertTrue(live.relogin('code=401', expected_revision=2))
+        live.ensure_login.assert_not_called()
+        live._set_login_invalid.assert_not_called()
+        live._request_im_reconnect.assert_called_once_with()
+
+    def test_network_error_during_saved_cookie_recovery_does_not_open_chrome(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._relogin_lock = threading.Lock()
+        live._login_state_lock = threading.RLock()
+        live._stop_event = threading.Event()
+        live._login_revision = 2
+        live._recover_saved_im_login = Mock(return_value=None)
+        live.ensure_login = Mock(return_value=True)
+        live._set_login_invalid = Mock()
+        live._request_im_reconnect = Mock()
+
+        self.assertFalse(live.relogin('network', expected_revision=2))
+        live.ensure_login.assert_not_called()
+        live._set_login_invalid.assert_not_called()
+        live._request_im_reconnect.assert_not_called()
 
     @patch('cookie_auth.subprocess.Popen')
     @patch('cookie_auth.find_chrome_binary', return_value='chrome.exe')

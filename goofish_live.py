@@ -471,7 +471,7 @@ class XianyuLive:
         return max(60, min(interval, int(expires_at - now - 300)))
 
     def check_login(self):
-        """检查 Cookie 和 IM token 是否仍可用，并把服务端刷新的 Cookie 持久化。"""
+        """检查并刷新 Cookie；IM token 只在连接明确失效时更新。"""
         if not self.cookies or not self.cookies.get('_m_h5_tk'):
             self._set_login_invalid()
             return False
@@ -497,24 +497,29 @@ class XianyuLive:
             logger.warning(f'登录态刷新被服务端拒绝: {ret_text[:200] or "empty response"}')
             self._set_login_invalid()
             return False
+        with self._login_state_lock:
+            self._login_valid = bool(self.myid and self.access_token)
+            self._sync_saved_session()
+        return self._login_valid
+
+    def _recover_saved_im_login(self):
+        """使用现有 Cookie 静默更新 IM token；None 表示网络状态无法确认。"""
         try:
             token_data = self.xianyu.get_token()
-            token_ret = token_data.get('ret') or []
-            token = str((token_data.get('data') or {}).get('accessToken') or '')
         except Exception as exc:
             if _is_transient_network_error(exc):
-                with self._login_state_lock:
-                    self._login_valid = bool(self.myid and self.access_token)
-                logger.warning(f'IM token 检查网络不可达，保留当前登录态并等待下次检查: {exc}')
-                return self._login_valid
-            logger.warning(f'IM token 检查失败: {exc}')
-            self._set_login_invalid()
+                logger.warning(f'IM token 静默刷新网络不可达，保留当前登录态等待重试: {exc}')
+                return None
+            logger.warning(f'IM token 静默刷新失败: {exc}')
             return False
+
+        token_ret = token_data.get('ret') or []
+        token = str((token_data.get('data') or {}).get('accessToken') or '')
         if not token or not any('SUCCESS' in str(item) for item in token_ret):
             token_ret_text = ' '.join(str(item) for item in token_ret)
-            logger.warning(f'IM token 已失效，需要重新登录: {token_ret_text[:200] or "empty response"}')
-            self._set_login_invalid()
+            logger.warning(f'当前 Cookie 无法刷新 IM token: {token_ret_text[:200] or "empty response"}')
             return False
+
         previous_token = self.access_token
         with self._login_state_lock:
             self.access_token = token
@@ -522,9 +527,7 @@ class XianyuLive:
             if token != previous_token:
                 self._login_revision = getattr(self, '_login_revision', 0) + 1
             self._sync_saved_session()
-        if previous_token and token != previous_token and self.ws is not None:
-            logger.info('闲鱼 IM token 已更新，正在主动重连以应用新 token')
-            self._request_im_reconnect()
+        logger.info('已使用本地 Cookie 静默恢复闲鱼登录态')
         return True
 
     def ensure_login(self, force=False):
@@ -629,15 +632,23 @@ class XianyuLive:
         )
 
     def relogin(self, reason='', expected_revision=None):
-        """登录态失效时重新走 Chrome 登录流程，成功后触发 WebSocket 重连。"""
+        """优先用现有 Cookie 恢复，明确失效后才打开 Chrome。"""
         with self._relogin_lock:
             if self._stop_event.is_set():
                 return False
             if expected_revision is not None and expected_revision != self._login_revision_snapshot():
                 logger.info('已忽略过期连接的登录失效通知')
                 return True
-            self._set_login_invalid()
             suffix = f'：{reason}' if reason else ''
+            recovered = self._recover_saved_im_login()
+            if recovered:
+                logger.info(f'登录态已静默恢复{suffix}')
+                self._request_im_reconnect()
+                return True
+            if recovered is None:
+                return False
+
+            self._set_login_invalid()
             logger.warning(f'登录态已失效，开始重新登录{suffix}')
             if not self.ensure_login(force=True):
                 logger.error('重新登录失败，等待下次心跳重试')
@@ -651,10 +662,17 @@ class XianyuLive:
         with self._relogin_lock:
             if self.check_login():
                 logger.info(f'{action}检测到 token 过期，已静默刷新登录态并重试')
-                self._request_im_reconnect()
                 return True
 
-            logger.warning(f'{action}检测到 token 过期，静默刷新失败，尝试重新获取 Chrome 登录态')
+            recovered = self._recover_saved_im_login()
+            if recovered:
+                logger.info(f'{action}已使用本地 Cookie 静默恢复登录态并重试')
+                self._request_im_reconnect()
+                return True
+            if recovered is None:
+                return False
+
+            logger.warning(f'{action}检测到 token 过期，本地 Cookie 已失效，尝试重新获取 Chrome 登录态')
             if not self.ensure_login(force=True):
                 logger.error(f'{action}登录态刷新失败，当前任务不再重复执行')
                 return False

@@ -104,7 +104,7 @@ class TokenRefreshTest(unittest.TestCase):
         self.assertEqual(fallback_a, fallback_b)
         self.assertNotEqual(source_a, fallback_a)
 
-    def test_access_token_change_requests_im_reconnect(self):
+    def test_routine_login_check_does_not_rotate_im_token_or_reconnect(self):
         live = XianyuLive.__new__(XianyuLive)
         live.cookies = {'_m_h5_tk': 'token_1000'}
         live.myid = 'seller_1'
@@ -115,17 +115,55 @@ class TokenRefreshTest(unittest.TestCase):
         live._sync_saved_session = Mock()
         live._request_im_reconnect = Mock()
         live._set_login_invalid = Mock()
-        live.xianyu = type('Api', (), {
-            'refresh_token': lambda self: {'ret': ['SUCCESS::调用成功']},
-            'get_token': lambda self: {
-                'ret': ['SUCCESS::调用成功'],
-                'data': {'accessToken': 'new-access-token'},
-            },
-        })()
+        live.xianyu = Mock()
+        live.xianyu.refresh_token.return_value = {'ret': ['SUCCESS::调用成功']}
 
         self.assertTrue(live.check_login())
+        self.assertEqual(live.access_token, 'old-access-token')
+        live.xianyu.get_token.assert_not_called()
+        live._request_im_reconnect.assert_not_called()
+
+    def test_saved_cookie_can_refresh_im_token_without_chrome(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live.access_token = 'old-access-token'
+        live._login_state_lock = threading.RLock()
+        live._login_valid = False
+        live._login_revision = 1
+        live._sync_saved_session = Mock()
+        live.xianyu = Mock()
+        live.xianyu.get_token.return_value = {
+            'ret': ['SUCCESS::调用成功'],
+            'data': {'accessToken': 'new-access-token'},
+        }
+
+        self.assertTrue(live._recover_saved_im_login())
         self.assertEqual(live.access_token, 'new-access-token')
+        self.assertTrue(live._login_valid)
+        self.assertEqual(live._login_revision, 2)
+
+    def test_task_token_failure_recovers_saved_cookie_before_chrome(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._relogin_lock = threading.Lock()
+        live.check_login = Mock(return_value=False)
+        live._recover_saved_im_login = Mock(return_value=True)
+        live.ensure_login = Mock(return_value=True)
+        live._request_im_reconnect = Mock()
+
+        self.assertTrue(live.refresh_login_for_expired_task_token('查询订单'))
+        live.ensure_login.assert_not_called()
         live._request_im_reconnect.assert_called_once_with()
+
+    def test_task_token_network_error_does_not_open_chrome(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._relogin_lock = threading.Lock()
+        live.check_login = Mock(return_value=False)
+        live._recover_saved_im_login = Mock(return_value=None)
+        live.ensure_login = Mock(return_value=True)
+        live._request_im_reconnect = Mock()
+
+        self.assertFalse(live.refresh_login_for_expired_task_token('查询订单'))
+        live.ensure_login.assert_not_called()
+        live._request_im_reconnect.assert_not_called()
 
 
 if __name__ == '__main__':
