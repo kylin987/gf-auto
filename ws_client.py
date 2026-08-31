@@ -363,6 +363,7 @@ class GatewayClient:
         if msg_type in {
             'task.xianyu.send_message',
             'task.xianyu.get_order_detail',
+            'task.xianyu.sync_goods',
             'task.xianyu.adjust_price',
             'task.xianyu.consign_dummy',
             'task.xianyu.cancel_order',
@@ -555,6 +556,12 @@ class GatewayClient:
             result = self._local_post('/api/order_detail', {'orderId': str(order_id)})
             logger.info(f'查询订单详情完成：订单={order_id}')
             return result
+        if task_type == 'task.xianyu.sync_goods':
+            page_size = min(50, max(1, int(payload.get('pageSize') or payload.get('page_size') or 20)))
+            result = self._local_post('/api/goods', {'pageSize': page_size})
+            goods = result.get('result') if isinstance(result, dict) else {}
+            logger.info(f'闲鱼商品同步完成：共{int((goods or {}).get("total") or 0)}项')
+            return result
         if task_type == 'task.xianyu.adjust_price':
             order_id = payload.get('orderId') or payload.get('order_id')
             modify_fee = payload.get('modifyFee') or payload.get('modify_fee')
@@ -696,6 +703,8 @@ class GatewayClient:
             return f'发送消息 toid={payload.get("toid") or payload.get("buyerId") or ""} 共{len(messages)}项'
         if task_type == 'task.xianyu.get_order_detail':
             return f'查询订单详情 订单={payload.get("orderId") or payload.get("order_id") or ""}'
+        if task_type == 'task.xianyu.sync_goods':
+            return f'同步闲鱼商品 每页={payload.get("pageSize") or payload.get("page_size") or 20}'
         if task_type == 'task.xianyu.adjust_price':
             return f'修改订单价格 订单={payload.get("orderId") or payload.get("order_id") or ""} 金额分={payload.get("modifyFee") or payload.get("modify_fee") or ""}'
         if task_type == 'task.xianyu.consign_dummy':

@@ -145,6 +145,8 @@ class XianyuDesktopApp:
         self.instances = load_instances()
         self.selected_id = self.instances[0]['id'] if self.instances else ''
         self.lives = {}
+        self.run_threads = {}
+        self.run_generations = {}
         self.states = {}
         self.events = []
         self.current_view = 'overview'
@@ -461,31 +463,66 @@ class XianyuDesktopApp:
         if int(instance.get('storeId') or 0) <= 0:
             messagebox.showwarning('无法启动', '该实例尚未绑定后台闲鱼店铺。请重新登录或联系管理员配置店铺授权。', parent=self.root)
             return
-        state = self.states.setdefault(instance['id'], {})
+        instance_id = instance['id']
+        state = self.states.setdefault(instance_id, {})
         if state.get('status') in ('starting', 'running'):
             return
+        previous_thread = self.run_threads.get(instance_id)
+        if previous_thread is not None and previous_thread.is_alive():
+            state.update({'status': 'stopping', 'hint': '上一个监听正在退出，请稍候'})
+            self._refresh_current_view()
+            return
+        if previous_thread is not None:
+            self.run_threads.pop(instance_id, None)
+
+        generation = self.run_generations.get(instance_id, 0) + 1
+        self.run_generations[instance_id] = generation
         state.update({'status': 'starting', 'hint': '正在校验 Chrome 登录店铺', 'account': {}})
         self._event(instance, 'system', '实例正在启动，校验 Chrome 登录态')
-        threading.Thread(target=self._run_instance, args=(instance,), daemon=True, name=f"fish-{instance['id']}").start()
+        thread = threading.Thread(
+            target=self._run_instance,
+            args=(instance, generation),
+            daemon=True,
+            name=f'fish-{instance_id}',
+        )
+        self.run_threads[instance_id] = thread
+        thread.start()
         self._refresh_current_view()
 
-    def _run_instance(self, instance):
+    def _is_current_run(self, instance_id, generation, thread):
+        return (
+            self.run_generations.get(instance_id) == generation
+            and self.run_threads.get(instance_id) is thread
+        )
+
+    def _run_instance(self, instance, generation):
         from goofish_live import XianyuLive
+        instance_id = instance['id']
+        current_thread = threading.current_thread()
         port = 18000 + (self.instances.index(instance) if instance in self.instances else 0)
+        live = None
         try:
-            with logger.contextualize(instance_id=instance['id']):
+            with logger.contextualize(instance_id=instance_id):
                 live = XianyuLive(
-                    cookie_file=instance_cookie_file(instance['id']),
+                    cookie_file=instance_cookie_file(instance_id),
                     gateway_auth=self.gateway_auth,
                     gateway_auth_manager=self.gateway_auth_manager,
                     account_changed_callback=lambda account, item=instance: self._chrome_account_changed(item, account),
-                    store_id=instance['storeId'], instance_id=instance['id'], instance_name=instance.get('name') or '',
-                    chrome_profile_dir=instance_chrome_profile_dir(instance['id']),
-                    local_api_port=port, log_dir=instance_log_dir(instance['id']),
+                    store_id=instance['storeId'], instance_id=instance_id, instance_name=instance.get('name') or '',
+                    chrome_profile_dir=instance_chrome_profile_dir(instance_id),
+                    local_api_port=port, log_dir=instance_log_dir(instance_id),
                 )
-                self.lives[instance['id']] = live
+                if (
+                    self.states.get(instance_id, {}).get('status') == 'stopping'
+                    or not self._is_current_run(instance_id, generation, current_thread)
+                ):
+                    live.stop()
+                    return
+                self.lives[instance_id] = live
                 if not live.ensure_login():
                     raise RuntimeError('未能获取有效的闲鱼登录态')
+                if live._stop_event.is_set() or not self._is_current_run(instance_id, generation, current_thread):
+                    return
                 account = live.current_chrome_account()
                 expected = str(instance.get('platformShopId') or '').strip()
                 actual = str(account.get('userId') or '').strip()
@@ -493,24 +530,37 @@ class XianyuDesktopApp:
                     raise RuntimeError(f'Chrome 登录闲鱼 ID {actual or "未识别"} 与后台店铺 ID {expected} 不一致')
                 if not expected:
                     raise RuntimeError('网关未提供后台闲鱼 ID，无法安全确认店铺归属')
-                self.states[instance['id']].update({'status': 'running', 'hint': '正在监听消息', 'account': account})
+                self.states[instance_id].update({'status': 'running', 'hint': '正在监听消息', 'account': account})
                 self._event(instance, 'system', f'店铺校验成功，开始监听：{account.get("nick") or actual}')
                 asyncio.run(live.main())
         except Exception as exc:
-            self.states.setdefault(instance['id'], {}).update({'status': 'error', 'hint': str(exc)})
-            self._event(instance, 'error', str(exc))
+            if self._is_current_run(instance_id, generation, current_thread):
+                state = self.states.setdefault(instance_id, {})
+                if state.get('status') != 'stopping':
+                    state.update({'status': 'error', 'hint': str(exc)})
+                    self._event(instance, 'error', str(exc))
         finally:
-            if self.states.get(instance['id'], {}).get('status') != 'error':
-                self.states.setdefault(instance['id'], {}).update({'status': 'stopped', 'hint': '已停止'})
-            self.lives.pop(instance['id'], None)
+            if live is not None:
+                live.stop_local_api()
+            if self.lives.get(instance_id) is live:
+                self.lives.pop(instance_id, None)
+            if self.run_threads.get(instance_id) is current_thread:
+                self.run_threads.pop(instance_id, None)
+                if self.states.get(instance_id, {}).get('status') != 'error':
+                    self.states.setdefault(instance_id, {}).update({'status': 'stopped', 'hint': '已停止'})
             self.root.after(0, self._refresh_current_view)
 
     def _stop_instance(self, instance):
-        live = self.lives.get(instance['id'])
+        instance_id = instance['id']
+        live = self.lives.get(instance_id)
         if live is not None:
-            live._stop_event.set()
-            live.stop_local_api()
-        self.states.setdefault(instance['id'], {}).update({'status': 'stopped', 'hint': '已停止'})
+            live.stop()
+        thread = self.run_threads.get(instance_id)
+        stopping = thread is not None and thread.is_alive()
+        self.states.setdefault(instance_id, {}).update({
+            'status': 'stopping' if stopping else 'stopped',
+            'hint': '正在停止' if stopping else '已停止',
+        })
         self._event(instance, 'system', '已停止监听')
         self._refresh_current_view()
 
@@ -535,6 +585,8 @@ class XianyuDesktopApp:
             return '● 运行中', C['green_soft'], C['green']
         if status == 'starting':
             return '● 正在启动', C['yellow_soft'], C['yellow_deep']
+        if status == 'stopping':
+            return '● 正在停止', C['gray_soft'], C['muted']
         if status == 'ready':
             return '● Chrome 已登录', C['green_soft'], C['green']
         if status == 'mismatch':

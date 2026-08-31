@@ -112,7 +112,7 @@ def _run_in_new_loop(coro):
     return result['value']
 
 
-async def _poll_login_cookies(ws_url, deadline):
+async def _poll_login_cookies(ws_url, deadline, stop_event=None):
     async with websockets.connect(ws_url, max_size=None) as ws:
         request_id = 0
 
@@ -204,6 +204,8 @@ async def _poll_login_cookies(ws_url, deadline):
         settled = False
         warned = False
         while time.time() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError('登录流程已停止')
             result = await call('Network.getAllCookies')
             cookies = result.get('cookies') or []
             if not cookies:
@@ -234,7 +236,7 @@ async def _poll_login_cookies(ws_url, deadline):
         raise TimeoutError('等待手动登录/获取 token 超时')
 
 
-def fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=None):
+def fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=None, stop_event=None):
     """启动本机 Chrome 打开卖家中心，等待手动登录后通过 CDP 获取 cookie。"""
     chrome = os.environ.get('XY_CHROME_PATH') or find_chrome_binary()
     if not chrome:
@@ -262,6 +264,8 @@ def fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=
         deadline = time.time() + timeout
         last_error = ''
         while time.time() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError('登录流程已停止')
             ws_url = _debugger_page_url(port)
             if ws_url:
                 # 登录页跳转时 page 级 CDP 连接会正常断开。短轮询后重新发现目标页面，
@@ -269,11 +273,13 @@ def fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=
                 attempt_deadline = min(deadline, time.time() + 15)
                 try:
                     cookie_string, user_agent, access_token, device_id = _run_in_new_loop(
-                        _poll_login_cookies(ws_url, attempt_deadline)
+                        _poll_login_cookies(ws_url, attempt_deadline, stop_event=stop_event)
                     )
                     logger.success('已获取登录 cookie')
                     return cookie_string, user_agent, access_token, device_id
                 except Exception as exc:
+                    if isinstance(exc, InterruptedError):
+                        raise
                     last_error = str(exc)
                     logger.debug(f'等待闲鱼登录页面稳定，重新连接 Chrome: {last_error}')
             time.sleep(0.5)

@@ -550,7 +550,7 @@ class XianyuApis:
         return res_json
 
     def _seller_mtop_post(self, api, data_val, version='1.0', spm_cnt='a21107h.42826273.0.0',
-                          response_type='originaljson', value_type=None):
+                          response_type='originaljson', value_type=None, query_params=None):
         """卖家端 mtop 通用 POST 请求，自动补全参数并生成 sign。"""
         params = {
             'jsv': '2.7.2',
@@ -568,6 +568,8 @@ class XianyuApis:
         }
         if value_type:
             params['valueType'] = value_type
+        if query_params:
+            params.update(query_params)
         token = self._cookie_value('_m_h5_tk').split('_')[0]
         params['sign'] = generate_mtop_sign(token, params['t'], params['appKey'], data_val)
         headers = {
@@ -594,6 +596,26 @@ class XianyuApis:
             timeout=15,
         )
         return response.json()
+
+    def search_seller_items(self, page_no=1, page_size=20):
+        """查询卖家工作台商品列表，单次只取一页。"""
+        data_val = json.dumps({
+            'pageNo': max(1, int(page_no)),
+            'pageSize': min(50, max(1, int(page_size))),
+            'bizType': 'commonPro',
+            'searchRequest': '{}',
+            'itemStatus': '0,-9',
+        }, separators=(',', ':'))
+        return self._seller_mtop_post(
+            'mtop.alibaba.idle.seller.pc.common.item.search',
+            data_val,
+            spm_cnt='a21107h.42829799.0.0',
+            query_params={
+                'needLoginPC': 'true',
+                'showErrorToast': 'true',
+                'spm_pre': 'a21107h.42829799.0.0',
+            },
+        )
 
     def adjust_order_price(self, order_id, modify_fee, new_transport_fee):
         """卖家端订单改价，金额单位为分（与 curl 保持一致）。"""

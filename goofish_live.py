@@ -115,6 +115,7 @@ class XianyuLive:
         self._relogin_lock = threading.Lock()
         self._login_state_lock = threading.RLock()
         self._login_valid = False
+        self._login_revision = 0
         self._seen_structures = set()
         self._seen_protocol_frames = set()
         self._seen_parse_failures = set()
@@ -142,6 +143,10 @@ class XianyuLive:
     def _set_login_invalid(self):
         with self._login_state_lock:
             self._login_valid = False
+
+    def _login_revision_snapshot(self):
+        with self._login_state_lock:
+            return getattr(self, '_login_revision', 0)
 
     def _sync_saved_session(self):
         self.cookies = self.xianyu.export_cookies() or self.cookies
@@ -514,6 +519,8 @@ class XianyuLive:
         with self._login_state_lock:
             self.access_token = token
             self._login_valid = True
+            if token != previous_token:
+                self._login_revision = getattr(self, '_login_revision', 0) + 1
             self._sync_saved_session()
         if previous_token and token != previous_token and self.ws is not None:
             logger.info('闲鱼 IM token 已更新，正在主动重连以应用新 token')
@@ -522,7 +529,11 @@ class XianyuLive:
 
     def ensure_login(self, force=False):
         """优先使用本地保存的 cookie，失效时打开 Chrome 手动登录并自动保存。"""
+        if self._stop_event.is_set():
+            return False
         if not force and self.cookies and self.access_token and self._device_id_from_store and self.check_login():
+            if self._stop_event.is_set():
+                return False
             logger.info('使用本地 cookie 登录成功')
             self._notify_chrome_account()
             return True
@@ -535,9 +546,15 @@ class XianyuLive:
             cookies_str, user_agent, access_token, device_id = fetch_cookies_via_chrome(
                 timeout=self.login_timeout,
                 profile_dir=self.chrome_profile_dir or None,
+                stop_event=self._stop_event,
             )
+        except InterruptedError:
+            logger.info('Chrome 登录流程已停止')
+            return False
         except Exception as exc:
             logger.exception(f'Chrome 登录失败: {exc}')
+            return False
+        if self._stop_event.is_set():
             return False
         self.cookies = trans_cookies(cookies_str)
         self.user_agent = user_agent or self.user_agent
@@ -554,6 +571,7 @@ class XianyuLive:
         self.xianyu = XianyuApis(self.cookies, self.device_id, user_agent=self.user_agent)
         with self._login_state_lock:
             self._login_valid = True
+            self._login_revision = getattr(self, '_login_revision', 0) + 1
         logger.info(f"登录成功: {self.cookies.get('tracknick')}")
         self._notify_chrome_account()
         return True
@@ -566,6 +584,26 @@ class XianyuLive:
             await websocket.close(code=1000, reason='refresh xianyu login')
         except Exception:
             pass
+
+    async def _close_websockets(self):
+        await self._close_im_websocket()
+        gateway_ws = getattr(self.ws_client, 'ws', None)
+        if gateway_ws is not None:
+            try:
+                await gateway_ws.close()
+            except Exception:
+                pass
+
+    def stop(self):
+        self._stop_event.set()
+        self._reconnect_event.set()
+        self.stop_local_api()
+        loop = self.loop
+        if loop is not None and loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(self._close_websockets(), loop)
+            except Exception:
+                pass
 
     def _request_im_reconnect(self):
         self._reconnect_event.set()
@@ -590,9 +628,14 @@ class XianyuLive:
             or '登录已失效' in body
         )
 
-    def relogin(self, reason=''):
+    def relogin(self, reason='', expected_revision=None):
         """登录态失效时重新走 Chrome 登录流程，成功后触发 WebSocket 重连。"""
         with self._relogin_lock:
+            if self._stop_event.is_set():
+                return False
+            if expected_revision is not None and expected_revision != self._login_revision_snapshot():
+                logger.info('已忽略过期连接的登录失效通知')
+                return True
             self._set_login_invalid()
             suffix = f'：{reason}' if reason else ''
             logger.warning(f'登录态已失效，开始重新登录{suffix}')
@@ -1005,6 +1048,62 @@ class XianyuLive:
             raise LookupError(f'未找到订单 {target}')
         return order
 
+    def get_seller_goods(self, payload):
+        """完整拉取卖家商品列表；任一分页失败时不返回部分结果。"""
+        page_size = min(50, max(1, int(payload.get('pageSize') or payload.get('page_size') or 20)))
+        page_no = 1
+        total = 0
+        total_pages = 1
+        items = []
+
+        while page_no <= total_pages:
+            result = self._call_seller_api_with_token_retry(
+                f'查询闲鱼商品第{page_no}页',
+                lambda page=page_no: self.xianyu.search_seller_items(page, page_size),
+            )
+            ret = result.get('ret') or []
+            ret_items = ret if isinstance(ret, list) else [ret]
+            if not any(str(item).upper().startswith('SUCCESS') for item in ret_items):
+                raise RuntimeError(f'查询闲鱼商品失败: {ret_items}')
+
+            outer = result.get('data') or {}
+            data = outer.get('data') or {}
+            if outer.get('code') != 'success' or data.get('success') is not True:
+                raise RuntimeError(f'查询闲鱼商品第{page_no}页返回异常')
+
+            page_items = data.get('itemSearchResponseList') or []
+            if not isinstance(page_items, list):
+                raise RuntimeError(f'查询闲鱼商品第{page_no}页数据格式错误')
+            total = int(data.get('total') or 0)
+            total_pages = max(1, int(data.get('totalPage') or 1))
+            items.extend(self._normalize_seller_item(item) for item in page_items if isinstance(item, dict))
+
+            has_next = bool(data.get('hasNextPage'))
+            if not has_next:
+                break
+            if page_no >= total_pages:
+                raise RuntimeError('闲鱼商品分页状态不一致')
+            page_no += 1
+
+        if len(items) != total:
+            raise RuntimeError(f'闲鱼商品列表不完整：期望{total}条，实际{len(items)}条')
+        return {
+            'total': total,
+            'pages': page_no,
+            'items': items,
+        }
+
+    @staticmethod
+    def _normalize_seller_item(item):
+        return {
+            'goodsId': str(item.get('itemId') or ''),
+            'goodsName': str(item.get('title') or ''),
+            'reservePrice': str(item.get('reservePrice') or '0'),
+            'status': int(item.get('itemStatus') or 0),
+            'imageUrl': str(item.get('itemImageUrl') or ''),
+            'quantity': int(item.get('quantity') or 0),
+        }
+
     def consign_dummy_order(self, payload):
         """本地 HTTP 接口调用的闲鱼虚拟发货入口。"""
         order_id = payload.get('orderId') or payload.get('order_id')
@@ -1181,6 +1280,7 @@ class XianyuLive:
                     self.ws = websocket
                     logger.info('WebSocket 已连接，开始注册')
                     await self.init(websocket)
+                    connection_login_revision = self._login_revision_snapshot()
                     self._token_failures = 0
                     reconnect_delay = 3
                     heartbeat_task = asyncio.create_task(self.heart_beat(websocket))
@@ -1194,11 +1294,16 @@ class XianyuLive:
                                 body_summary = str(message.get('body'))[:300]
                                 logger.info(f'WS 服务端消息: lwp={msg_lwp} code={msg_code} body={body_summary}')
                             if self._is_im_auth_rejected(message):
+                                if self._stop_event.is_set():
+                                    break
                                 logger.warning('闲鱼 IM 登录被服务端拒绝，正在刷新 Chrome 登录态')
-                                await asyncio.to_thread(
+                                refreshed = await asyncio.to_thread(
                                     self.relogin,
                                     f'lwp={msg_lwp or "-"} code={msg_code if msg_code is not None else "-"}',
+                                    connection_login_revision,
                                 )
+                                if not refreshed:
+                                    retry_delay = max(retry_delay, 60)
                                 break
                             ack = {
                                 "code": 200,
