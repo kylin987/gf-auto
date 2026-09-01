@@ -80,7 +80,9 @@ def is_token_expired_response(data):
     return any(
         'TOKEN_EXPIRED' in str(item).upper()
         or 'TOKEN_EXOIRED' in str(item).upper()
+        or 'TOKEN_EMPTY' in str(item).upper()
         or '令牌过期' in str(item)
+        or '令牌为空' in str(item)
         for item in items
     )
 

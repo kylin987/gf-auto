@@ -42,12 +42,28 @@ class TokenRefreshTest(unittest.TestCase):
     def test_recognizes_known_expired_token_variants(self):
         self.assertTrue(is_token_expired_response({'ret': ['FAIL_SYS_TOKEN_EXOIRED::令牌过期']}))
         self.assertTrue(is_token_expired_response({'ret': 'TOKEN_EXPIRED'}))
+        self.assertTrue(is_token_expired_response({'ret': ['FAIL_SYS_TOKEN_EMPTY::令牌为空']}))
         self.assertFalse(is_token_expired_response({'ret': ['SUCCESS::调用成功']}))
 
     def test_refresh_retries_once_after_cookie_rotation(self):
         api = self._api([
             FakeResponse(
                 {'ret': ['FAIL_SYS_TOKEN_EXOIRED::令牌过期']},
+                {'_m_h5_tk': 'fresh_token_2000'},
+            ),
+            FakeResponse({'ret': ['SUCCESS::调用成功'], 'data': {'userId': '1'}}),
+        ])
+
+        result = api.refresh_token()
+
+        self.assertIn('SUCCESS', result['ret'][0])
+        self.assertEqual(len(api.session.calls), 2)
+        self.assertEqual(api._cookie_value('_m_h5_tk'), 'fresh_token_2000')
+
+    def test_refresh_retries_once_after_empty_token_rotation(self):
+        api = self._api([
+            FakeResponse(
+                {'ret': ['FAIL_SYS_TOKEN_EMPTY::令牌为空']},
                 {'_m_h5_tk': 'fresh_token_2000'},
             ),
             FakeResponse({'ret': ['SUCCESS::调用成功'], 'data': {'userId': '1'}}),
