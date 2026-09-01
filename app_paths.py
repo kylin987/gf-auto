@@ -78,10 +78,24 @@ def _read_instances(path: Path) -> list[dict]:
 
 
 def load_instances(pub_id: int | str | None = None, authorized_stores: list[dict] | None = None) -> list[dict]:
-    """按商户读取实例，首次升级时从旧全局配置中迁移当前商户的店铺。"""
+    """按商户和当前授权店铺读取实例，首次升级时迁移旧全局配置。"""
     path = instances_file(pub_id)
     if path.is_file():
-        return _read_instances(path)
+        instances = _read_instances(path)
+        if authorized_stores is None:
+            return instances
+        authorized_ids = {
+            int(store.get("id") or 0)
+            for store in authorized_stores
+            if isinstance(store, dict) and int(store.get("id") or 0) > 0
+        }
+        instances = [
+            instance
+            for instance in instances
+            if int(instance.get("storeId") or 0) in authorized_ids
+        ]
+        save_instances(instances, pub_id)
+        return instances
 
     try:
         normalized_pub_id = int(pub_id or 0)

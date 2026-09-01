@@ -1,6 +1,6 @@
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import dashboard
 from cookie_auth import fetch_cookies_via_chrome
@@ -212,6 +212,69 @@ class InstanceLifecycleTest(unittest.TestCase):
 
         live.ensure_login.assert_not_called()
         live._request_im_reconnect.assert_called_once_with()
+
+    @patch('goofish_live.fetch_cookies_via_chrome', side_effect=TimeoutError('等待手动登录/获取 token 超时'))
+    @patch('goofish_live.check_chrome_installed', return_value=(True, 'chrome.exe', ''))
+    def test_chrome_login_timeout_keeps_login_required_state(self, installed, fetch_cookies):
+        live = XianyuLive.__new__(XianyuLive)
+        live._stop_event = threading.Event()
+        live.login_timeout = 300
+        live.chrome_profile_dir = '/tmp/store-a-profile'
+        live.login_state_callback = Mock()
+
+        self.assertFalse(live.ensure_login(force=True))
+
+        self.assertEqual(live.login_state_callback.call_args_list, [
+            call('login_required', '已打开独立 Chrome，请在 5 分钟内完成登录'),
+            call('login_required', '登录超时，Chrome 窗口已关闭，等待自动重试'),
+        ])
+
+    def test_saved_cookie_recovery_reports_running_state(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live.xianyu = Mock()
+        live.xianyu.get_token.return_value = {
+            'ret': ['SUCCESS::调用成功'],
+            'data': {'accessToken': 'new-token'},
+        }
+        live.access_token = 'old-token'
+        live._login_state_lock = threading.RLock()
+        live._login_revision = 1
+        live._sync_saved_session = Mock()
+        live.login_state_callback = Mock()
+
+        self.assertTrue(live._recover_saved_im_login())
+
+        live.login_state_callback.assert_called_once_with('running', '登录态已静默恢复，正在监听消息')
+
+    @patch('dashboard.messagebox.showwarning')
+    def test_login_required_warning_is_shown_once_until_recovered(self, warning):
+        app = self._app()
+        instance = {'id': 'store-a', 'name': '小影票务'}
+        app.instances = [instance]
+        app.run_generations['store-a'] = 1
+        app.states['store-a'] = {'status': 'running', 'hint': '正在监听消息'}
+
+        app._apply_login_state(instance, 1, 'login_required', '已打开独立 Chrome，请在 5 分钟内完成登录')
+        app._apply_login_state(instance, 1, 'login_required', 'Chrome 窗口已关闭，需要登录，15 分钟后自动重试')
+
+        self.assertEqual(app.states['store-a']['status'], 'login_required')
+        self.assertEqual(app.states['store-a']['hint'], 'Chrome 窗口已关闭，需要登录，15 分钟后自动重试')
+        warning.assert_called_once()
+
+        app._apply_login_state(instance, 1, 'running', '登录态已静默恢复，正在监听消息')
+        app._apply_login_state(instance, 1, 'login_required', '已打开独立 Chrome，请在 5 分钟内完成登录')
+        self.assertEqual(warning.call_count, 2)
+
+    def test_login_required_instance_can_be_stopped(self):
+        app = self._app()
+        instance = {'id': 'store-a'}
+        app.instances = [instance]
+        app.states['store-a'] = {'status': 'login_required'}
+        app._stop_instance = Mock()
+
+        app._toggle_instance(instance)
+
+        app._stop_instance.assert_called_once_with(instance)
 
     @patch('cookie_auth.subprocess.Popen')
     @patch('cookie_auth.find_chrome_binary', return_value='chrome.exe')

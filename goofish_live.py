@@ -74,6 +74,7 @@ def _is_transient_network_error(exc):
 class XianyuLive:
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
                  heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
+                 login_state_callback=None,
                  store_id=None, instance_id='', instance_name='', chrome_profile_dir=None,
                  local_api_port=8000, log_dir=None):
         self.base_url = 'wss://wss-goofish.dingtalk.com/'
@@ -85,6 +86,7 @@ class XianyuLive:
         self.gateway_auth = gateway_auth or {}
         self.gateway_auth_manager = gateway_auth_manager
         self.account_changed_callback = account_changed_callback
+        self.login_state_callback = login_state_callback
         self.store_id = int(store_id or 0)
         self.instance_id = str(instance_id or '')
         self.instance_name = str(instance_name or '')
@@ -188,6 +190,15 @@ class XianyuLive:
             return
         try:
             self.account_changed_callback(self.current_chrome_account())
+        except Exception:
+            pass
+
+    def _notify_login_state(self, status, hint=''):
+        callback = getattr(self, 'login_state_callback', None)
+        if not callable(callback):
+            return
+        try:
+            callback(status, hint)
         except Exception:
             pass
 
@@ -552,6 +563,7 @@ class XianyuLive:
                 self._login_revision = getattr(self, '_login_revision', 0) + 1
             self._sync_saved_session()
         logger.info('已使用本地 Cookie 静默恢复闲鱼登录态')
+        self._notify_login_state('running', '登录态已静默恢复，正在监听消息')
         return True
 
     def ensure_login(self, force=False):
@@ -564,12 +576,18 @@ class XianyuLive:
             self._clear_auto_chrome_login_cooldown()
             logger.info('使用本地 cookie 登录成功')
             self._notify_chrome_account()
+            self._notify_login_state('running', '正在监听消息')
             return True
         installed, _, chrome_hint = check_chrome_installed()
         if not installed:
             logger.error(chrome_hint)
             return False
         logger.info('需要登录闲鱼卖家中心，正在打开 Chrome')
+        login_minutes = max(1, int((self.login_timeout + 59) / 60))
+        self._notify_login_state(
+            'login_required',
+            f'已打开独立 Chrome，请在 {login_minutes} 分钟内完成登录',
+        )
         try:
             cookies_str, user_agent, access_token, device_id = fetch_cookies_via_chrome(
                 timeout=self.login_timeout,
@@ -579,8 +597,13 @@ class XianyuLive:
         except InterruptedError:
             logger.info('Chrome 登录流程已停止')
             return False
+        except TimeoutError as exc:
+            logger.error(f'Chrome 登录超时，窗口已自动关闭: {exc}')
+            self._notify_login_state('login_required', '登录超时，Chrome 窗口已关闭，等待自动重试')
+            return False
         except Exception as exc:
             logger.exception(f'Chrome 登录失败: {exc}')
+            self._notify_login_state('login_required', f'Chrome 登录失败，等待自动重试：{exc}')
             return False
         if self._stop_event.is_set():
             return False
@@ -603,6 +626,7 @@ class XianyuLive:
         self._clear_auto_chrome_login_cooldown()
         logger.info(f"登录成功: {self.cookies.get('tracknick')}")
         self._notify_chrome_account()
+        self._notify_login_state('running', '登录成功，正在监听消息')
         return True
 
     async def _close_im_websocket(self):
@@ -682,6 +706,10 @@ class XianyuLive:
                 self._delay_auto_chrome_login()
                 cooldown_minutes = max(1, int(getattr(self, '_auto_login_cooldown', 900) / 60))
                 logger.error(f'重新登录失败，{cooldown_minutes} 分钟后自动重试')
+                self._notify_login_state(
+                    'login_required',
+                    f'Chrome 窗口已关闭，需要登录，{cooldown_minutes} 分钟后自动重试',
+                )
                 return False
             logger.info('重新登录成功，触发 WebSocket 重连')
             self._request_im_reconnect()
@@ -708,6 +736,11 @@ class XianyuLive:
             if not self.ensure_login(force=True):
                 self._delay_auto_chrome_login()
                 logger.error(f'{action}登录态刷新失败，当前任务不再重复执行')
+                cooldown_minutes = max(1, int(getattr(self, '_auto_login_cooldown', 900) / 60))
+                self._notify_login_state(
+                    'login_required',
+                    f'Chrome 窗口已关闭，需要登录，{cooldown_minutes} 分钟后自动重试',
+                )
                 return False
             logger.info(f'{action}重新获取登录态成功，正在重试')
             self._request_im_reconnect()

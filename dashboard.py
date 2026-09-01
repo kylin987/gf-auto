@@ -310,7 +310,7 @@ class XianyuDesktopApp:
 
     def _state(self, instance):
         state = self.states.get(instance.get('id'))
-        if state and state.get('status') in ('starting', 'running', 'error'):
+        if state and state.get('status') in ('starting', 'running', 'login_required', 'error'):
             return state
         account = chrome_account_from_cookie_file(instance_cookie_file(instance['id']))
         actual = str(account.get('userId') or '')
@@ -434,12 +434,14 @@ class XianyuDesktopApp:
         state = self._state(instance)
         tk.Label(row, text=instance.get('name') or '未命名店铺', bg=C['surface'], fg=C['ink'], font=(UI_FONT, 13, 'bold')).grid(row=0, column=0, sticky='w')
         tk.Label(row, text=f"后台店铺 #{instance.get('storeId') or '未绑定'}  ·  闲鱼 ID：{instance.get('platformShopId') or '待网关升级'}", bg=C['surface'], fg=C['muted'], font=(UI_FONT, 10)).grid(row=1, column=0, sticky='w', pady=(5, 0))
+        hint_color = C['red'] if state.get('status') == 'login_required' else C['muted']
+        tk.Label(row, text=state.get('hint') or '', bg=C['surface'], fg=hint_color, font=(UI_FONT, 9)).grid(row=2, column=0, sticky='w', pady=(4, 0))
         row.grid_columnconfigure(0, weight=1)
         status, bg, fg = self._status_style(state.get('status'))
-        tk.Label(row, text=status, bg=bg, fg=fg, font=(UI_FONT, 9, 'bold'), padx=8, pady=4).grid(row=0, column=1, rowspan=2, padx=8)
-        toggle_text = '停止运行' if state.get('status') == 'running' else '启动'
-        tk.Button(row, text=toggle_text, command=lambda item=instance: self._toggle_instance(item), bg=C['yellow'] if toggle_text == '启动' else C['ink'], fg='#fff', bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold'), padx=13, pady=7).grid(row=0, column=2, rowspan=2, padx=(3, 0))
-        tk.Button(row, text='重新登录', command=lambda item=instance: self._force_relogin(item), bg=C['surface'], fg=C['yellow_deep'], bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold')).grid(row=0, column=3, rowspan=2, padx=(8, 0))
+        tk.Label(row, text=status, bg=bg, fg=fg, font=(UI_FONT, 9, 'bold'), padx=8, pady=4).grid(row=0, column=1, rowspan=3, padx=8)
+        toggle_text = '停止运行' if state.get('status') in ('running', 'login_required') else '启动'
+        tk.Button(row, text=toggle_text, command=lambda item=instance: self._toggle_instance(item), bg=C['yellow'] if toggle_text == '启动' else C['ink'], fg='#fff', bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold'), padx=13, pady=7).grid(row=0, column=2, rowspan=3, padx=(3, 0))
+        tk.Button(row, text='重新登录', command=lambda item=instance: self._force_relogin(item), bg=C['surface'], fg=C['yellow_deep'], bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 10, 'bold')).grid(row=0, column=3, rowspan=3, padx=(8, 0))
 
     def _empty_state(self, parent):
         tk.Label(parent, text='还没有可运行的闲鱼店铺', bg=C['bg'], fg=C['ink'], font=(UI_FONT, 17, 'bold')).pack(pady=(80, 8))
@@ -458,7 +460,7 @@ class XianyuDesktopApp:
         self._show_overview()
 
     def _toggle_instance(self, instance):
-        if self._state(instance).get('status') in ('running', 'starting'):
+        if self._state(instance).get('status') in ('running', 'starting', 'login_required'):
             self._stop_instance(instance)
         else:
             self._start_instance(instance)
@@ -469,7 +471,7 @@ class XianyuDesktopApp:
             return
         instance_id = instance['id']
         state = self.states.setdefault(instance_id, {})
-        if state.get('status') in ('starting', 'running'):
+        if state.get('status') in ('starting', 'running', 'login_required'):
             return
         previous_thread = self.run_threads.get(instance_id)
         if previous_thread is not None and previous_thread.is_alive():
@@ -512,6 +514,7 @@ class XianyuDesktopApp:
                     gateway_auth=self.gateway_auth,
                     gateway_auth_manager=self.gateway_auth_manager,
                     account_changed_callback=lambda account, item=instance: self._chrome_account_changed(item, account),
+                    login_state_callback=lambda status, hint, item=instance, run=generation: self._login_state_changed(item, run, status, hint),
                     store_id=instance['storeId'], instance_id=instance_id, instance_name=instance.get('name') or '',
                     chrome_profile_dir=instance_chrome_profile_dir(instance_id),
                     local_api_port=port, log_dir=instance_log_dir(instance_id),
@@ -571,7 +574,7 @@ class XianyuDesktopApp:
         self._refresh_current_view()
 
     def _force_relogin(self, instance):
-        if self._state(instance).get('status') in ('running', 'starting'):
+        if self._state(instance).get('status') in ('running', 'starting', 'login_required'):
             messagebox.showinfo('重新登录', '请先停止该店铺实例，再重新登录。', parent=self.root)
             return
         cookie_path = instance_cookie_file(instance['id'])
@@ -585,6 +588,27 @@ class XianyuDesktopApp:
     def _chrome_account_changed(self, instance, account):
         self.states.setdefault(instance['id'], {}).setdefault('account', {}).update(account or {})
         self.root.after(0, self._refresh_current_view)
+
+    def _login_state_changed(self, instance, generation, status, hint):
+        self.root.after(0, lambda: self._apply_login_state(instance, generation, status, hint))
+
+    def _apply_login_state(self, instance, generation, status, hint):
+        instance_id = instance['id']
+        if self.run_generations.get(instance_id) != generation:
+            return
+        state = self.states.setdefault(instance_id, {})
+        if state.get('status') == 'stopping':
+            return
+        previous_status = state.get('status')
+        state.update({'status': status, 'hint': hint})
+        self._refresh_current_view()
+        if status == 'login_required' and previous_status != 'login_required':
+            messagebox.showwarning(
+                '闲鱼需要登录',
+                f'{instance.get("name") or "闲鱼店铺"}的登录态已失效。\n\n'
+                f'{hint}\n请切换到已打开的独立 Chrome 窗口完成登录。',
+                parent=self.root,
+            )
 
     def _bind_platform_shop_id(self, instance, platform_shop_id):
         from ws_client import GatewayTokenError, gateway_bind_xianyu_store
@@ -624,6 +648,8 @@ class XianyuDesktopApp:
             return '● 运行中', C['green_soft'], C['green']
         if status == 'starting':
             return '● 正在启动', C['yellow_soft'], C['yellow_deep']
+        if status == 'login_required':
+            return '● 需要登录', C['red_soft'], C['red']
         if status == 'stopping':
             return '● 正在停止', C['gray_soft'], C['muted']
         if status == 'ready':
