@@ -1,3 +1,3 @@
 """Single source of truth for the desktop client version."""
 
-APP_VERSION = "0.1.43"
+APP_VERSION = "0.1.44"

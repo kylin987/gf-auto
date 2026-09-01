@@ -221,7 +221,7 @@ GitHub Actions 需要配置仓库 Secrets：
 - `ALIYUN_OSS_ACCESS_KEY_ID`
 - `ALIYUN_OSS_ACCESS_KEY_SECRET`
 
-桌面客户端会把数据保存在 `%LOCALAPPDATA%\yhs-fish-plugin`。升级安装包不会删除这里的登录态与店铺实例。
+桌面客户端会把数据保存在 `%LOCALAPPDATA%\yhs-fish-plugin`。店铺实例按 SaaS 商户 ID 分开保存，升级安装包不会删除这里的登录态与店铺实例。
 
 ### 多店铺实例
 

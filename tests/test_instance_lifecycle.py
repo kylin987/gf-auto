@@ -30,6 +30,7 @@ class InstanceLifecycleTest(unittest.TestCase):
         app.lives = {}
         app.run_threads = {}
         app.run_generations = {}
+        app.pub_id = 101
         app._event = Mock()
         app._refresh_current_view = Mock()
         return app
@@ -111,7 +112,7 @@ class InstanceLifecycleTest(unittest.TestCase):
         self.assertEqual(instance['platformShopId'], '436176214')
         self.assertEqual(app.gateway_auth['accessToken'], 'bound-token')
         self.assertEqual(app.gateway_auth['scope']['stores'][0]['platformShopId'], '436176214')
-        save.assert_called_once_with(app.instances)
+        save.assert_called_once_with(app.instances, app.pub_id)
 
     def test_stale_im_401_does_not_open_chrome_again(self):
         live = XianyuLive.__new__(XianyuLive)

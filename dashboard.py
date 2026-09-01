@@ -142,7 +142,11 @@ class XianyuDesktopApp:
         self.root = root
         self.gateway_auth = gateway_auth or {}
         self.gateway_auth_manager = GatewayAuthManager(self.gateway_auth)
-        self.instances = load_instances()
+        scope = self.gateway_auth.get('scope') or {}
+        user = self.gateway_auth.get('user') or {}
+        self.pub_id = int(scope.get('pubId') or user.get('pubId') or 0)
+        authorized_stores = self._authorized_stores()
+        self.instances = load_instances(self.pub_id, authorized_stores)
         self.selected_id = self.instances[0]['id'] if self.instances else ''
         self.lives = {}
         self.run_threads = {}
@@ -152,7 +156,7 @@ class XianyuDesktopApp:
         self.current_view = 'overview'
         self.log_queue = queue.Queue()
         self._sink_id = logger.add(self.log_queue.put, level='INFO', enqueue=True, format=self._format_log)
-        self._sync_authorized_stores()
+        self._sync_authorized_stores(authorized_stores)
 
         self.downloading_update = False
         self.download_dialog = None
@@ -194,9 +198,9 @@ class XianyuDesktopApp:
         instance_id = str(record['extra'].get('instance_id') or '')
         return f"{record['time']:HH:mm:ss}|{instance_id}|{record['message']}\n"
 
-    def _sync_authorized_stores(self):
+    def _sync_authorized_stores(self, stores=None):
         """迁移旧单店数据时，只用 Cookie 的实际闲鱼 ID 进行精确绑定。"""
-        stores = self._authorized_stores()
+        stores = self._authorized_stores() if stores is None else stores
         stores_by_platform_id = {
             str(store['platformShopId']): store
             for store in stores if store.get('platformShopId')
@@ -231,7 +235,7 @@ class XianyuDesktopApp:
                 self.instances.append(new_instance(store))
                 changed = True
         if changed:
-            save_instances(self.instances)
+            save_instances(self.instances, self.pub_id)
 
     def _build_shell(self):
         self.shell = tk.Frame(self.root, bg=C['bg'])
@@ -445,7 +449,7 @@ class XianyuDesktopApp:
         instance = new_instance(store)
         self.instances.append(instance)
         self.selected_id = instance['id']
-        save_instances(self.instances)
+        save_instances(self.instances, self.pub_id)
         self._event(instance, 'system', f'已添加店铺实例：{instance["name"]}')
         self._show_stores()
 
@@ -611,7 +615,7 @@ class XianyuDesktopApp:
             if int(store.get('id') or 0) == int(instance.get('storeId') or 0):
                 store['platformShopId'] = bound_shop_id
                 break
-        save_instances(self.instances)
+        save_instances(self.instances, self.pub_id)
         self._event(instance, 'system', f'已自动绑定闲鱼店铺 ID：{bound_shop_id}')
         return bound_shop_id
 

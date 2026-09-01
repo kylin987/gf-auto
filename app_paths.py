@@ -34,7 +34,13 @@ def default_log_dir() -> str:
     return str(app_data_dir() / "log")
 
 
-def instances_file() -> Path:
+def instances_file(pub_id: int | str | None = None) -> Path:
+    try:
+        normalized_pub_id = int(pub_id or 0)
+    except (TypeError, ValueError):
+        normalized_pub_id = 0
+    if normalized_pub_id > 0:
+        return app_data_dir() / "pubs" / str(normalized_pub_id) / INSTANCES_FILE_NAME
     return app_data_dir() / INSTANCES_FILE_NAME
 
 
@@ -60,9 +66,7 @@ def instance_chrome_profile_dir(instance_id: str) -> str:
     return str(target)
 
 
-def load_instances() -> list[dict]:
-    """读取店铺实例，并将历史单店 Cookie 无感迁移为默认实例。"""
-    path = instances_file()
+def _read_instances(path: Path) -> list[dict]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         instances = payload.get("instances", []) if isinstance(payload, dict) else []
@@ -70,6 +74,41 @@ def load_instances() -> list[dict]:
             return [item for item in instances if isinstance(item, dict) and item.get("id")]
     except (OSError, ValueError, TypeError):
         pass
+    return []
+
+
+def load_instances(pub_id: int | str | None = None, authorized_stores: list[dict] | None = None) -> list[dict]:
+    """按商户读取实例，首次升级时从旧全局配置中迁移当前商户的店铺。"""
+    path = instances_file(pub_id)
+    if path.is_file():
+        return _read_instances(path)
+
+    try:
+        normalized_pub_id = int(pub_id or 0)
+    except (TypeError, ValueError):
+        normalized_pub_id = 0
+    if normalized_pub_id > 0:
+        stores = authorized_stores or []
+        authorized_ids = {int(store.get("id") or 0) for store in stores if isinstance(store, dict)}
+        authorized_platform_ids = {
+            str(store.get("platformShopId") or "").strip()
+            for store in stores if isinstance(store, dict) and str(store.get("platformShopId") or "").strip()
+        }
+        migrated = []
+        for instance in _read_instances(instances_file()):
+            store_id = int(instance.get("storeId") or 0)
+            if store_id in authorized_ids:
+                migrated.append(instance)
+                continue
+            if store_id <= 0 and authorized_platform_ids:
+                actual_shop_id = chrome_account_from_cookie_file(
+                    instance_cookie_file(instance["id"])
+                ).get("userId")
+                if str(actual_shop_id or "") in authorized_platform_ids:
+                    migrated.append(instance)
+        if migrated:
+            save_instances(migrated, normalized_pub_id)
+        return migrated
 
     legacy_cookie = Path(default_cookie_file())
     if not legacy_cookie.is_file():
@@ -92,8 +131,8 @@ def load_instances() -> list[dict]:
     return [instance]
 
 
-def save_instances(instances: list[dict]) -> None:
-    path = instances_file()
+def save_instances(instances: list[dict], pub_id: int | str | None = None) -> None:
+    path = instances_file(pub_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"version": 1, "instances": instances}, ensure_ascii=False, indent=2),
