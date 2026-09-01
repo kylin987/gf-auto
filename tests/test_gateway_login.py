@@ -7,6 +7,8 @@ from unittest.mock import Mock, patch
 from ws_client import (
     GatewayAuthManager,
     GatewayLoginError,
+    GatewayTokenError,
+    gateway_bind_xianyu_store,
     gateway_login,
     gateway_token_expires_soon,
 )
@@ -53,6 +55,32 @@ class GatewayLoginTest(unittest.TestCase):
     def test_detects_gateway_token_before_expiry(self):
         self.assertTrue(gateway_token_expires_soon(self._token(int(time.time()) + 120)))
         self.assertFalse(gateway_token_expires_soon(self._token(int(time.time()) + 3600)))
+
+    @patch('ws_client.requests.post')
+    def test_binds_xianyu_store_with_gateway_token(self, post):
+        post.return_value = Mock(status_code=200, json=Mock(return_value={
+            'code': 200,
+            'msg': 'success',
+            'data': {'storeId': 203, 'platformShopId': '436176214', 'bound': True},
+        }))
+
+        result = gateway_bind_xianyu_store('token', 203, '436176214')
+
+        self.assertEqual(result['platformShopId'], '436176214')
+        _, kwargs = post.call_args
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer token')
+        self.assertEqual(kwargs['json'], {'storeId': 203, 'platformShopId': '436176214'})
+
+    @patch('ws_client.requests.post')
+    def test_xianyu_store_bind_reports_expired_gateway_token(self, post):
+        post.return_value = Mock(status_code=401, json=Mock(return_value={
+            'code': 401,
+            'msg': '登录已过期，请重新登录',
+            'data': [],
+        }))
+
+        with self.assertRaises(GatewayTokenError):
+            gateway_bind_xianyu_store('expired', 203, '436176214')
 
     @patch('ws_client.gateway_login')
     @patch('ws_client.load_login_config')

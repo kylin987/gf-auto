@@ -15,12 +15,17 @@ from PIL import Image
 import websockets
 
 GATEWAY_LOGIN_URL = 'https://plugin-gateway.yinghuasuan.com/api/v1/client/login'
+GATEWAY_XIANYU_STORE_BIND_URL = 'https://plugin-gateway.yinghuasuan.com/api/v1/client/xianyu/store/bind'
 DEFAULT_WS_URL = 'wss://plugin-gateway.yinghuasuan.com/ws'
 LOGIN_CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.xianyu')
 LOGIN_CONFIG_FILE = os.path.join(LOGIN_CONFIG_DIR, 'login.json')
 
 
 class GatewayLoginError(Exception):
+    pass
+
+
+class GatewayTokenError(GatewayLoginError):
     pass
 
 
@@ -97,6 +102,27 @@ def gateway_login(username, password, device_id=None):
     if data.get('code') != 200 or not data.get('data'):
         raise GatewayLoginError(str(data.get('msg') or data))
     save_login_config(username=username, password=password, device_id=device_id)
+    return data['data']
+
+
+def gateway_bind_xianyu_store(access_token, store_id, platform_shop_id):
+    try:
+        response = requests.post(
+            GATEWAY_XIANYU_STORE_BIND_URL,
+            json={
+                'storeId': int(store_id),
+                'platformShopId': str(platform_shop_id or '').strip(),
+            },
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=15,
+        )
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError(f'闲鱼店铺绑定请求失败：{exc}') from exc
+    if response.status_code == 401 or data.get('code') == 401:
+        raise GatewayTokenError(str(data.get('msg') or '登录已过期，请重新登录'))
+    if data.get('code') != 200 or not data.get('data'):
+        raise RuntimeError(str(data.get('msg') or data))
     return data['data']
 
 

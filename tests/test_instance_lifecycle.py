@@ -84,6 +84,35 @@ class InstanceLifecycleTest(unittest.TestCase):
         self.assertIsNot(app.run_threads['store-a'], app.run_threads['store-b'])
         self.assertEqual(app.run_generations, {'store-a': 1, 'store-b': 1})
 
+    @patch('dashboard.save_instances')
+    @patch('ws_client.gateway_bind_xianyu_store')
+    def test_empty_platform_shop_id_is_bound_after_chrome_login(self, bind_store, save):
+        app = self._app()
+        instance = {'id': 'store-a', 'storeId': 203, 'platformShopId': ''}
+        app.instances = [instance]
+        app.gateway_auth = {
+            'accessToken': 'token',
+            'scope': {'stores': [{'id': 203, 'platformShopId': ''}]},
+        }
+        app.gateway_auth_manager = Mock()
+        bind_store.return_value = {
+            'storeId': 203,
+            'platformShopId': '436176214',
+            'bound': True,
+            'accessToken': 'bound-token',
+            'scope': {
+                'stores': [{'id': 203, 'platformShopId': '436176214'}],
+            },
+        }
+
+        result = app._bind_platform_shop_id(instance, '436176214')
+
+        self.assertEqual(result, '436176214')
+        self.assertEqual(instance['platformShopId'], '436176214')
+        self.assertEqual(app.gateway_auth['accessToken'], 'bound-token')
+        self.assertEqual(app.gateway_auth['scope']['stores'][0]['platformShopId'], '436176214')
+        save.assert_called_once_with(app.instances)
+
     def test_stale_im_401_does_not_open_chrome_again(self):
         live = XianyuLive.__new__(XianyuLive)
         live._relogin_lock = threading.Lock()
@@ -144,6 +173,44 @@ class InstanceLifecycleTest(unittest.TestCase):
         live.ensure_login.assert_not_called()
         live._set_login_invalid.assert_not_called()
         live._request_im_reconnect.assert_not_called()
+
+    @patch('goofish_live.time.monotonic', side_effect=[100.0, 100.0, 120.0])
+    def test_failed_auto_login_starts_cooldown(self, monotonic):
+        live = XianyuLive.__new__(XianyuLive)
+        live._relogin_lock = threading.Lock()
+        live._login_state_lock = threading.RLock()
+        live._stop_event = threading.Event()
+        live._login_revision = 2
+        live._auto_login_cooldown = 900
+        live._auto_login_retry_at = 0.0
+        live._auto_login_notice_at = 0.0
+        live._recover_saved_im_login = Mock(return_value=False)
+        live.ensure_login = Mock(return_value=False)
+        live._set_login_invalid = Mock()
+
+        self.assertFalse(live.relogin('session expired', expected_revision=2))
+        self.assertFalse(live.relogin('session expired', expected_revision=2))
+
+        live.ensure_login.assert_called_once_with(force=True)
+        self.assertEqual(live._auto_login_retry_at, 1000.0)
+
+    @patch('goofish_live.time.monotonic', return_value=120.0)
+    def test_cooldown_still_allows_saved_cookie_recovery(self, monotonic):
+        live = XianyuLive.__new__(XianyuLive)
+        live._relogin_lock = threading.Lock()
+        live._login_state_lock = threading.RLock()
+        live._stop_event = threading.Event()
+        live._login_revision = 2
+        live._auto_login_retry_at = 1000.0
+        live._recover_saved_im_login = Mock(return_value=True)
+        live.ensure_login = Mock(return_value=True)
+        live._set_login_invalid = Mock()
+        live._request_im_reconnect = Mock()
+
+        self.assertTrue(live.relogin('session expired', expected_revision=2))
+
+        live.ensure_login.assert_not_called()
+        live._request_im_reconnect.assert_called_once_with()
 
     @patch('cookie_auth.subprocess.Popen')
     @patch('cookie_auth.find_chrome_binary', return_value='chrome.exe')

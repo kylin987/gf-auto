@@ -116,6 +116,9 @@ class XianyuLive:
         self._login_state_lock = threading.RLock()
         self._login_valid = False
         self._login_revision = 0
+        self._auto_login_cooldown = max(60, int(os.environ.get('XY_AUTO_LOGIN_COOLDOWN', '900')))
+        self._auto_login_retry_at = 0.0
+        self._auto_login_notice_at = 0.0
         self._seen_structures = set()
         self._seen_protocol_frames = set()
         self._seen_parse_failures = set()
@@ -147,6 +150,27 @@ class XianyuLive:
     def _login_revision_snapshot(self):
         with self._login_state_lock:
             return getattr(self, '_login_revision', 0)
+
+    def _can_retry_auto_chrome_login(self, now=None):
+        now = time.monotonic() if now is None else float(now)
+        retry_at = getattr(self, '_auto_login_retry_at', 0.0)
+        if retry_at <= now:
+            return True
+        last_notice_at = getattr(self, '_auto_login_notice_at', 0.0)
+        if now - last_notice_at >= 60:
+            remaining = max(1, int((retry_at - now + 59) // 60))
+            logger.warning(f'Chrome 自动登录处于冷却期，约 {remaining} 分钟后重试')
+            self._auto_login_notice_at = now
+        return False
+
+    def _delay_auto_chrome_login(self):
+        cooldown = getattr(self, '_auto_login_cooldown', 900)
+        self._auto_login_retry_at = time.monotonic() + cooldown
+        self._auto_login_notice_at = 0.0
+
+    def _clear_auto_chrome_login_cooldown(self):
+        self._auto_login_retry_at = 0.0
+        self._auto_login_notice_at = 0.0
 
     def _sync_saved_session(self):
         self.cookies = self.xianyu.export_cookies() or self.cookies
@@ -537,6 +561,7 @@ class XianyuLive:
         if not force and self.cookies and self.access_token and self._device_id_from_store and self.check_login():
             if self._stop_event.is_set():
                 return False
+            self._clear_auto_chrome_login_cooldown()
             logger.info('使用本地 cookie 登录成功')
             self._notify_chrome_account()
             return True
@@ -575,6 +600,7 @@ class XianyuLive:
         with self._login_state_lock:
             self._login_valid = True
             self._login_revision = getattr(self, '_login_revision', 0) + 1
+        self._clear_auto_chrome_login_cooldown()
         logger.info(f"登录成功: {self.cookies.get('tracknick')}")
         self._notify_chrome_account()
         return True
@@ -650,8 +676,12 @@ class XianyuLive:
 
             self._set_login_invalid()
             logger.warning(f'登录态已失效，开始重新登录{suffix}')
+            if not self._can_retry_auto_chrome_login():
+                return False
             if not self.ensure_login(force=True):
-                logger.error('重新登录失败，等待下次心跳重试')
+                self._delay_auto_chrome_login()
+                cooldown_minutes = max(1, int(getattr(self, '_auto_login_cooldown', 900) / 60))
+                logger.error(f'重新登录失败，{cooldown_minutes} 分钟后自动重试')
                 return False
             logger.info('重新登录成功，触发 WebSocket 重连')
             self._request_im_reconnect()
@@ -673,7 +703,10 @@ class XianyuLive:
                 return False
 
             logger.warning(f'{action}检测到 token 过期，本地 Cookie 已失效，尝试重新获取 Chrome 登录态')
+            if not self._can_retry_auto_chrome_login():
+                return False
             if not self.ensure_login(force=True):
+                self._delay_auto_chrome_login()
                 logger.error(f'{action}登录态刷新失败，当前任务不再重复执行')
                 return False
             logger.info(f'{action}重新获取登录态成功，正在重试')

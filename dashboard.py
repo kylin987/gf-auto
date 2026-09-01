@@ -526,10 +526,12 @@ class XianyuDesktopApp:
                 account = live.current_chrome_account()
                 expected = str(instance.get('platformShopId') or '').strip()
                 actual = str(account.get('userId') or '').strip()
+                if not actual:
+                    raise RuntimeError('未能从 Chrome Cookie 获取闲鱼店铺 ID')
+                if not expected:
+                    expected = self._bind_platform_shop_id(instance, actual)
                 if expected and actual != expected:
                     raise RuntimeError(f'Chrome 登录闲鱼 ID {actual or "未识别"} 与后台店铺 ID {expected} 不一致')
-                if not expected:
-                    raise RuntimeError('网关未提供后台闲鱼 ID，无法安全确认店铺归属')
                 self.states[instance_id].update({'status': 'running', 'hint': '正在监听消息', 'account': account})
                 self._event(instance, 'system', f'店铺校验成功，开始监听：{account.get("nick") or actual}')
                 asyncio.run(live.main())
@@ -579,6 +581,39 @@ class XianyuDesktopApp:
     def _chrome_account_changed(self, instance, account):
         self.states.setdefault(instance['id'], {}).setdefault('account', {}).update(account or {})
         self.root.after(0, self._refresh_current_view)
+
+    def _bind_platform_shop_id(self, instance, platform_shop_id):
+        from ws_client import GatewayTokenError, gateway_bind_xianyu_store
+
+        token = str(self.gateway_auth.get('accessToken') or '')
+        try:
+            result = gateway_bind_xianyu_store(token, instance['storeId'], platform_shop_id)
+        except GatewayTokenError:
+            refreshed = self.gateway_auth_manager.refresh(stale_token=token, force=True)
+            result = gateway_bind_xianyu_store(
+                str(refreshed.get('accessToken') or ''),
+                instance['storeId'],
+                platform_shop_id,
+            )
+
+        bound_shop_id = str(result.get('platformShopId') or '').strip()
+        if not bound_shop_id or bound_shop_id != str(platform_shop_id):
+            raise RuntimeError('后台返回的闲鱼店铺 ID 与当前登录账号不一致')
+
+        access_token = str(result.get('accessToken') or '')
+        if access_token:
+            self.gateway_auth['token'] = access_token
+            self.gateway_auth['accessToken'] = access_token
+        if isinstance(result.get('scope'), dict):
+            self.gateway_auth['scope'] = result['scope']
+        instance['platformShopId'] = bound_shop_id
+        for store in (self.gateway_auth.get('scope') or {}).get('stores') or []:
+            if int(store.get('id') or 0) == int(instance.get('storeId') or 0):
+                store['platformShopId'] = bound_shop_id
+                break
+        save_instances(self.instances)
+        self._event(instance, 'system', f'已自动绑定闲鱼店铺 ID：{bound_shop_id}')
+        return bound_shop_id
 
     def _status_style(self, status):
         if status == 'running':
