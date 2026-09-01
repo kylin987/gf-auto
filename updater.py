@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 from urllib.parse import urlparse
 
 import requests
@@ -92,7 +91,7 @@ def launch_installer(installer_path: Path) -> None:
         raise FileNotFoundError(f"找不到更新安装包：{installer_path}")
     if os.name != "nt":
         raise RuntimeError("在线安装仅支持 Windows 客户端")
-    subprocess.Popen([str(installer_path)], cwd=str(installer_path.parent))
+    os.startfile(str(installer_path))
 
 
 def _parse_manifest(manifest: dict) -> UpdateInfo:

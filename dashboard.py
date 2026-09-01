@@ -898,7 +898,15 @@ class XianyuDesktopApp:
             messagebox.showwarning('下载更新', f'下载更新失败：{error}', parent=self.root)
             return
         if messagebox.askyesno('安装更新', '更新包已下载并校验完成，是否现在安装？（安装会关闭当前客户端）', parent=self.root):
-            updater.launch_installer(installer)
+            try:
+                updater.launch_installer(installer)
+            except Exception as exc:
+                messagebox.showwarning(
+                    '安装更新',
+                    f'启动安装程序失败：{exc}\n\n安装包位置：{installer}\n请打开该目录后手动运行安装包。',
+                    parent=self.root,
+                )
+                return
             self._on_close()
 
     def _on_close(self):
