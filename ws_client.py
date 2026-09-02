@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import ssl
 import threading
 import time
 import uuid
@@ -9,6 +10,7 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
+import certifi
 import requests
 from loguru import logger
 from PIL import Image
@@ -19,6 +21,15 @@ GATEWAY_XIANYU_STORE_BIND_URL = 'https://plugin-gateway.yinghuasuan.com/api/v1/c
 DEFAULT_WS_URL = 'wss://plugin-gateway.yinghuasuan.com/ws'
 LOGIN_CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.xianyu')
 LOGIN_CONFIG_FILE = os.path.join(LOGIN_CONFIG_DIR, 'login.json')
+
+
+def gateway_websocket_connect_options(ws_url):
+    if not str(ws_url or '').lower().startswith('wss://'):
+        return {}
+
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=certifi.where())
+    return {'ssl': context}
 
 
 class GatewayLoginError(Exception):
@@ -192,7 +203,10 @@ class GatewayClient:
             try:
                 if gateway_token_expires_soon(self.token):
                     await self._refresh_gateway_auth(force=False)
-                async with websockets.connect(self.ws_url) as ws:
+                async with websockets.connect(
+                    self.ws_url,
+                    **gateway_websocket_connect_options(self.ws_url),
+                ) as ws:
                     self.ws = ws
                     await self._bind(ws)
                     reconnect_delay = 5

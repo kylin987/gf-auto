@@ -8,6 +8,7 @@ from ws_client import (
     GatewayAuthManager,
     GatewayLoginError,
     GatewayTokenError,
+    gateway_websocket_connect_options,
     gateway_bind_xianyu_store,
     gateway_login,
     gateway_token_expires_soon,
@@ -55,6 +56,23 @@ class GatewayLoginTest(unittest.TestCase):
     def test_detects_gateway_token_before_expiry(self):
         self.assertTrue(gateway_token_expires_soon(self._token(int(time.time()) + 120)))
         self.assertFalse(gateway_token_expires_soon(self._token(int(time.time()) + 3600)))
+
+    @patch('ws_client.certifi.where', return_value='C:/app/certifi/cacert.pem')
+    @patch('ws_client.ssl.create_default_context')
+    def test_gateway_wss_uses_system_and_certifi_trust(self, create_default_context, certifi_where):
+        context = create_default_context.return_value
+
+        options = gateway_websocket_connect_options('wss://gateway.example/ws')
+
+        self.assertIs(options['ssl'], context)
+        create_default_context.assert_called_once_with()
+        certifi_where.assert_called_once_with()
+        context.load_verify_locations.assert_called_once_with(cafile='C:/app/certifi/cacert.pem')
+
+    @patch('ws_client.ssl.create_default_context')
+    def test_gateway_plain_ws_does_not_create_ssl_context(self, create_default_context):
+        self.assertEqual(gateway_websocket_connect_options('ws://127.0.0.1/ws'), {})
+        create_default_context.assert_not_called()
 
     @patch('ws_client.requests.post')
     def test_binds_xianyu_store_with_gateway_token(self, post):
