@@ -106,6 +106,15 @@ class TokenRefreshTest(unittest.TestCase):
         })()
         self.assertAlmostEqual(live._seconds_until_login_check(now), 120, delta=1)
 
+    def test_invalid_login_is_checked_again_within_one_minute(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live.heartbeat_interval = 600
+        live._login_valid = False
+        live.cookies = {}
+        live.xianyu = Mock()
+
+        self.assertEqual(live._seconds_until_login_check(), 60)
+
     def test_stable_message_id_uses_source_id_or_content_fallback(self):
         live = XianyuLive.__new__(XianyuLive)
         live.store_id = 203
@@ -156,6 +165,38 @@ class TokenRefreshTest(unittest.TestCase):
         self.assertEqual(live.access_token, 'new-access-token')
         self.assertTrue(live._login_valid)
         self.assertEqual(live._login_revision, 2)
+
+    def test_routine_check_reconnects_when_cookie_becomes_valid_again(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live.is_login_ready = Mock(return_value=False)
+        live.check_login = Mock(return_value=True)
+        live.relogin = Mock()
+        live._clear_auto_chrome_login_cooldown = Mock()
+        live._notify_login_state = Mock()
+        live._request_im_reconnect = Mock()
+
+        self.assertTrue(live._maintain_login())
+
+        live.relogin.assert_not_called()
+        live._clear_auto_chrome_login_cooldown.assert_called_once_with()
+        live._notify_login_state.assert_called_once_with(
+            'running',
+            '登录态已自动恢复，正在监听消息',
+        )
+        live._request_im_reconnect.assert_called_once_with()
+
+    def test_network_failure_does_not_revive_invalid_login(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live.cookies = {'_m_h5_tk': 'token_1000'}
+        live.myid = 'seller_1'
+        live.access_token = 'old-access-token'
+        live._login_state_lock = threading.RLock()
+        live._login_valid = False
+        live.xianyu = Mock()
+        live.xianyu.refresh_token.side_effect = ConnectionError('getaddrinfo failed')
+
+        self.assertFalse(live.check_login())
+        self.assertFalse(live._login_valid)
 
     def test_task_token_failure_recovers_saved_cookie_before_chrome(self):
         live = XianyuLive.__new__(XianyuLive)

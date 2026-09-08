@@ -509,6 +509,8 @@ class XianyuLive:
     def _seconds_until_login_check(self, now=None):
         now = time.time() if now is None else float(now)
         interval = max(30, int(self.heartbeat_interval))
+        if not getattr(self, '_login_valid', True):
+            return min(interval, 60)
         cookie = str(self.xianyu.export_cookies().get('_m_h5_tk') or self.cookies.get('_m_h5_tk') or '')
         try:
             expires_at = int(cookie.rsplit('_', 1)[1]) / 1000
@@ -526,9 +528,9 @@ class XianyuLive:
         except Exception as exc:
             if _is_transient_network_error(exc):
                 with self._login_state_lock:
-                    self._login_valid = bool(self.myid and self.access_token)
+                    login_valid = bool(self._login_valid)
                 logger.warning(f'登录态检查网络不可达，保留当前登录态并等待下次检查: {exc}')
-                return self._login_valid
+                return login_valid
             logger.warning(f'登录态检查失败: {exc}')
             self._set_login_invalid()
             return False
@@ -1348,8 +1350,18 @@ class XianyuLive:
             self._login_retry_event.clear()
             if self._stop_event.is_set():
                 break
-            if not self.check_login():
-                self.relogin()
+            self._maintain_login()
+
+    def _maintain_login(self):
+        was_login_ready = self.is_login_ready()
+        if not self.check_login():
+            return self.relogin()
+        if not was_login_ready:
+            self._clear_auto_chrome_login_cooldown()
+            logger.info('本地 Cookie 已重新恢复有效，触发 WebSocket 重连')
+            self._notify_login_state('running', '登录态已自动恢复，正在监听消息')
+            self._request_im_reconnect()
+        return True
 
     def _run_user_alive(self):
         with logger.contextualize(instance_id=self.instance_id):
