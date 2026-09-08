@@ -207,7 +207,7 @@ class XianyuDesktopApp:
         }
         changed = False
         for instance in self.instances:
-            actual_shop_id = str(chrome_account_from_cookie_file(instance_cookie_file(instance['id'])).get('userId') or '')
+            actual_shop_id = str(chrome_account_from_cookie_file(instance_cookie_file(instance['id'], self.pub_id)).get('userId') or '')
             matched_store = stores_by_platform_id.get(actual_shop_id)
             if matched_store:
                 if int(instance.get('storeId') or 0) != matched_store['id']:
@@ -312,7 +312,7 @@ class XianyuDesktopApp:
         state = self.states.get(instance.get('id'))
         if state and state.get('status') in ('starting', 'running', 'login_required', 'error'):
             return state
-        account = chrome_account_from_cookie_file(instance_cookie_file(instance['id']))
+        account = chrome_account_from_cookie_file(instance_cookie_file(instance['id'], self.pub_id))
         actual = str(account.get('userId') or '')
         expected = str(instance.get('platformShopId') or '')
         if actual and expected and actual == expected:
@@ -510,14 +510,14 @@ class XianyuDesktopApp:
         try:
             with logger.contextualize(instance_id=instance_id):
                 live = XianyuLive(
-                    cookie_file=instance_cookie_file(instance_id),
+                    cookie_file=instance_cookie_file(instance_id, self.pub_id),
                     gateway_auth=self.gateway_auth,
                     gateway_auth_manager=self.gateway_auth_manager,
                     account_changed_callback=lambda account, item=instance: self._chrome_account_changed(item, account),
                     login_state_callback=lambda status, hint, item=instance, run=generation: self._login_state_changed(item, run, status, hint),
                     store_id=instance['storeId'], instance_id=instance_id, instance_name=instance.get('name') or '',
-                    chrome_profile_dir=instance_chrome_profile_dir(instance_id),
-                    local_api_port=port, log_dir=instance_log_dir(instance_id),
+                    chrome_profile_dir=instance_chrome_profile_dir(instance_id, self.pub_id),
+                    local_api_port=port, log_dir=instance_log_dir(instance_id, self.pub_id),
                 )
                 if (
                     self.states.get(instance_id, {}).get('status') == 'stopping'
@@ -577,7 +577,7 @@ class XianyuDesktopApp:
         if self._state(instance).get('status') in ('running', 'starting', 'login_required'):
             messagebox.showinfo('重新登录', '请先停止该店铺实例，再重新登录。', parent=self.root)
             return
-        cookie_path = instance_cookie_file(instance['id'])
+        cookie_path = instance_cookie_file(instance['id'], self.pub_id)
         try:
             os.remove(cookie_path)
         except FileNotFoundError:

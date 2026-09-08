@@ -44,26 +44,53 @@ def instances_file(pub_id: int | str | None = None) -> Path:
     return app_data_dir() / INSTANCES_FILE_NAME
 
 
-def instance_dir(instance_id: str) -> Path:
-    target = app_data_dir() / "instances" / str(instance_id)
+def instance_dir(instance_id: str, pub_id: int | str | None = None) -> Path:
+    try:
+        normalized_pub_id = int(pub_id or 0)
+    except (TypeError, ValueError):
+        normalized_pub_id = 0
+    root = app_data_dir() / "pubs" / str(normalized_pub_id) if normalized_pub_id > 0 else app_data_dir()
+    target = root / "instances" / str(instance_id)
     target.mkdir(parents=True, exist_ok=True)
     return target
 
 
-def instance_cookie_file(instance_id: str) -> str:
-    return str(instance_dir(instance_id) / "cookies.json")
+def instance_cookie_file(instance_id: str, pub_id: int | str | None = None) -> str:
+    return str(instance_dir(instance_id, pub_id) / "cookies.json")
 
 
-def instance_log_dir(instance_id: str) -> str:
-    target = instance_dir(instance_id) / "log"
+def instance_log_dir(instance_id: str, pub_id: int | str | None = None) -> str:
+    target = instance_dir(instance_id, pub_id) / "log"
     target.mkdir(parents=True, exist_ok=True)
     return str(target)
 
 
-def instance_chrome_profile_dir(instance_id: str) -> str:
-    target = instance_dir(instance_id) / "chrome-profile"
+def instance_chrome_profile_dir(instance_id: str, pub_id: int | str | None = None) -> str:
+    target = instance_dir(instance_id, pub_id) / "chrome-profile"
     target.mkdir(parents=True, exist_ok=True)
     return str(target)
+
+
+def _legacy_instance_dir(instance_id: str) -> Path:
+    return app_data_dir() / "instances" / str(instance_id)
+
+
+def _migrate_instance_data(instance_id: str, pub_id: int) -> None:
+    source = _legacy_instance_dir(instance_id)
+    if pub_id <= 0 or not source.is_dir():
+        return
+    target = instance_dir(instance_id, pub_id)
+    try:
+        for source_path in source.rglob("*"):
+            relative_path = source_path.relative_to(source)
+            target_path = target / relative_path
+            if source_path.is_dir():
+                target_path.mkdir(parents=True, exist_ok=True)
+            elif not target_path.exists():
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, target_path)
+    except OSError:
+        pass
 
 
 def _read_instances(path: Path) -> list[dict]:
@@ -83,6 +110,8 @@ def load_instances(pub_id: int | str | None = None, authorized_stores: list[dict
     if path.is_file():
         instances = _read_instances(path)
         if authorized_stores is None:
+            for instance in instances:
+                _migrate_instance_data(str(instance["id"]), int(pub_id or 0))
             return instances
         authorized_ids = {
             int(store.get("id") or 0)
@@ -95,6 +124,8 @@ def load_instances(pub_id: int | str | None = None, authorized_stores: list[dict
             if int(instance.get("storeId") or 0) in authorized_ids
         ]
         save_instances(instances, pub_id)
+        for instance in instances:
+            _migrate_instance_data(str(instance["id"]), int(pub_id or 0))
         return instances
 
     try:
@@ -116,12 +147,14 @@ def load_instances(pub_id: int | str | None = None, authorized_stores: list[dict
                 continue
             if store_id <= 0 and authorized_platform_ids:
                 actual_shop_id = chrome_account_from_cookie_file(
-                    instance_cookie_file(instance["id"])
+                    str(_legacy_instance_dir(instance["id"]) / "cookies.json")
                 ).get("userId")
                 if str(actual_shop_id or "") in authorized_platform_ids:
                     migrated.append(instance)
         if migrated:
             save_instances(migrated, normalized_pub_id)
+            for instance in migrated:
+                _migrate_instance_data(str(instance["id"]), normalized_pub_id)
         return migrated
 
     legacy_cookie = Path(default_cookie_file())

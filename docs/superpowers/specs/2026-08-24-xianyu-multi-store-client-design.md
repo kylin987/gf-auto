@@ -22,12 +22,15 @@
 客户端配置根目录为 `%LOCALAPPDATA%\\yhs-fish-plugin`：
 
 ```text
-instances.json
-instances/
-  <instance-id>/
-    cookies.json
-    chrome-profile/
-    log/
+pubs/
+  <pub-id>/
+    instances.json
+    instances/
+      <instance-id>/
+        cookies.json
+        event_outbox.sqlite3
+        chrome-profile/
+        log/
 ```
 
 每个实例创建一个 `XianyuLive` 运行单元，单独维护闲鱼长连接、网关客户端、停止信号和本地 HTTP 端口。端口按实例稳定分配，避免本地任务回调冲突。

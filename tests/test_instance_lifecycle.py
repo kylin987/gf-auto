@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import unittest
 from unittest.mock import Mock, call, patch
@@ -245,6 +246,55 @@ class InstanceLifecycleTest(unittest.TestCase):
         self.assertTrue(live._recover_saved_im_login())
 
         live.login_state_callback.assert_called_once_with('running', '登录态已静默恢复，正在监听消息')
+
+    def test_message_structure_is_reported_only_once(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._seen_structures = set()
+        message = {'1': {'2': 'cid'}, '3': 'value'}
+
+        first_shape, first_seen = live._log_message_structure(message)
+        second_shape, second_seen = live._log_message_structure(message)
+
+        self.assertEqual(first_shape, '1-dict:2')
+        self.assertEqual(second_shape, first_shape)
+        self.assertTrue(first_seen)
+        self.assertFalse(second_seen)
+
+    def test_unknown_sync_batch_keeps_one_sample_per_structure(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._seen_structures = set()
+        live._last_sync_log_at = 0
+        live._save_raw_message = Mock()
+
+        asyncio.run(live.handle_message({
+            'body': {
+                'syncPushPackage': {
+                    'data': [{'data': {'foo': 1}}, {'data': {'foo': 2}}],
+                },
+            },
+        }, None))
+
+        live._save_raw_message.assert_called_once_with({'foo': 1})
+
+    def test_background_sync_events_are_silently_ignored(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._seen_structures = set()
+        live._last_sync_log_at = 0
+        live._save_raw_message = Mock()
+
+        asyncio.run(live.handle_message({
+            'body': {
+                'syncPushPackage': {
+                    'data': [
+                        {'data': {'operation': {'content': {'contentType': 8}}}},
+                        {'data': {'operation': {'content': {'contentType': 11}}}},
+                    ],
+                },
+            },
+        }, None))
+
+        live._save_raw_message.assert_not_called()
+        self.assertEqual(live._seen_structures, set())
 
     @patch('dashboard.messagebox.showwarning')
     def test_login_required_warning_is_shown_once_until_recovered(self, warning):

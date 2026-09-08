@@ -4,7 +4,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app_paths import instances_file, load_instances, save_instances
+from app_paths import (
+    instance_cookie_file,
+    instance_dir,
+    instances_file,
+    load_instances,
+    save_instances,
+)
 
 
 class AppPathsTest(unittest.TestCase):
@@ -59,6 +65,7 @@ class AppPathsTest(unittest.TestCase):
 
                 self.assertEqual([item['id'] for item in matching_pub], ['legacy-a'])
                 self.assertEqual(other_pub, [])
+                self.assertTrue(Path(instance_cookie_file('legacy-a', 1001)).is_file())
 
     def test_saved_pub_instances_are_filtered_by_current_authorized_stores(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -79,6 +86,36 @@ class AppPathsTest(unittest.TestCase):
                 self.assertEqual([item['storeId'] for item in active], [29, 305])
                 persisted = json.loads(instances_file(1001).read_text(encoding='utf-8'))
                 self.assertEqual([item['storeId'] for item in persisted['instances']], [29, 305])
+
+    def test_instance_runtime_data_is_isolated_by_pub(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch('app_paths.app_data_dir', return_value=root):
+                self.assertEqual(
+                    instance_dir('store-a', 1001),
+                    root / 'pubs' / '1001' / 'instances' / 'store-a',
+                )
+                self.assertNotEqual(instance_dir('store-a', 1001), instance_dir('store-a', 2002))
+
+    def test_legacy_runtime_data_migrates_without_overwriting_pub_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy_dir = root / 'instances' / 'store-a'
+            legacy_dir.mkdir(parents=True)
+            (legacy_dir / 'cookies.json').write_text('legacy-cookie', encoding='utf-8')
+            (legacy_dir / 'event_outbox.sqlite3').write_text('legacy-outbox', encoding='utf-8')
+            (root / 'instances.json').write_text(json.dumps({
+                'version': 1,
+                'instances': [{'id': 'store-a', 'storeId': 29, 'name': '店铺 A'}],
+            }, ensure_ascii=False), encoding='utf-8')
+
+            with patch('app_paths.app_data_dir', return_value=root):
+                target_dir = instance_dir('store-a', 1001)
+                (target_dir / 'cookies.json').write_text('current-cookie', encoding='utf-8')
+                load_instances(1001, [{'id': 29, 'platformShopId': 'shop-a'}])
+
+                self.assertEqual((target_dir / 'cookies.json').read_text(encoding='utf-8'), 'current-cookie')
+                self.assertEqual((target_dir / 'event_outbox.sqlite3').read_text(encoding='utf-8'), 'legacy-outbox')
 
 
 if __name__ == '__main__':

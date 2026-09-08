@@ -273,6 +273,17 @@ class XianyuLive:
             return True
         return isinstance(message.get('1'), (list, str))
 
+    @staticmethod
+    def _is_background_sync_event(message):
+        """闲鱼会批量补发会话唤醒、智能话术等后台通知，无需展示或留存。"""
+        if not isinstance(message, dict):
+            return False
+        operation = message.get('operation')
+        content = operation.get('content') if isinstance(operation, dict) else None
+        if not isinstance(content, dict):
+            return False
+        return str(content.get('contentType') or '').strip() in ('8', '11')
+
     def _is_self_message(self, message):
         """闲鱼会把店铺发出的消息回显到同步流，不能再当作买家消息上报。"""
         first = message.get('1') if isinstance(message, dict) else {}
@@ -282,7 +293,7 @@ class XianyuLive:
         return bool(sender_id and current_id and sender_id == current_id)
 
     def _log_message_structure(self, data):
-        """首次遇到某种消息结构时打印一次，便于定位真实聊天消息的字段。"""
+        """返回消息结构及是否首次出现，避免批量同步消息重复刷屏。"""
         try:
             if not isinstance(data, dict):
                 shape = f'non-dict:{type(data).__name__}'
@@ -295,12 +306,11 @@ class XianyuLive:
                     shape = f'1-dict:{keys}'
                 else:
                     shape = f'1-other:{type(first).__name__}'
-            if shape not in self._seen_structures:
-                self._seen_structures.add(shape)
-                top_keys = list(data.keys()) if isinstance(data, dict) else []
-                logger.info(f'收到新结构消息: {shape}, 顶层keys: {top_keys}')
+            first_seen = shape not in self._seen_structures
+            self._seen_structures.add(shape)
+            return shape, first_seen
         except Exception:
-            pass
+            return 'unknown', False
 
     def _parse_sync_data(self, raw):
         self._last_parse_error = ''
@@ -1475,7 +1485,9 @@ class XianyuLive:
                 self._save_unparsed_message(raw)
                 self._log_parse_failure_once(raw, self._last_parse_error)
                 continue
-            self._log_message_structure(parsed)
+            if self._is_background_sync_event(parsed):
+                continue
+            structure, first_seen = self._log_message_structure(parsed)
             if self._is_status_event(parsed):
                 self._log_status_event_once(parsed)
                 continue
@@ -1496,8 +1508,9 @@ class XianyuLive:
                 if content_type in (1, 2, 3, 4, 5, 6) and self.ws_client is not None:
                     await self.ws_client.send(simplified)
             else:
-                self._save_raw_message(parsed)
-                logger.info('闲鱼收到未识别消息，已保留结构供排查')
+                if first_seen:
+                    self._save_raw_message(parsed)
+                    logger.info(f'闲鱼收到未识别消息：结构={structure}，原始包已保存到本店 chat 日志')
             if not self._is_chat_message(parsed):
                 continue
 
