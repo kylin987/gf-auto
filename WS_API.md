@@ -154,7 +154,7 @@ wss://plugin-gateway.yinghuasuan.com/ws
 
 买家首次进入新会话时仍使用 `xianyu.message`，客户端将原始 `sessionArouse` 归一为
 `contentType=8`、`eventName=session_opened`，并携带 `sessionId/cid/senderUserId/itemId/time`。
-该事件只接受 2 分钟内的新建会话，并按 `storeId + sessionId` 在本地持久化去重。
+该事件按 `storeId + sessionId` 在本地持久化去重，每个会话只上报一次；超过 2 分钟的历史补发由 Outbox 丢弃。
 
 ## 6. contentType 说明
 

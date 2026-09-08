@@ -125,7 +125,7 @@ python goofish_live.py --debug
 
 桌面版按子账号和店铺隔离运行数据，路径为 `%LOCALAPPDATA%\yhs-fish-plugin\pubs\<pubId>\instances\<instanceId>`。其中包含 Cookie、Chrome Profile、聊天日志和待上报事件数据库。升级后会从旧 `instances\<instanceId>` 目录复制缺失数据，但不会覆盖新目录已有文件。
 
-闲鱼会批量补发的会话唤醒、智能话术和商品定价通知会被静默忽略；其他能够解码但尚未识别业务类型的同步消息按结构保留一个样本到 `chat_YYYY-MM-DD.jsonl`，界面也只提示一次。只有 JSON、解密和 Base64 均失败时才生成 `unparsed_YYYY-MM-DD.jsonl`。
+闲鱼的买家进入会话通知会按会话去重后上报；批量补发的过期会话唤醒、智能话术和商品定价通知会被静默忽略。其他能够解码但尚未识别业务类型的同步消息按结构保留一个样本到 `chat_YYYY-MM-DD.jsonl`，界面也只提示一次。只有 JSON、解密和 Base64 均失败时才生成 `unparsed_YYYY-MM-DD.jsonl`。
 
 程序会先调用插件网关登录接口，登录成功后连接网关 WebSocket：把收到的文本、图片、订单卡片包装成 `plugin.v1` 的 `xianyu.message` 上报。业务回复、查订单、改价、虚拟发货、取消订单由网关下发 `task.xianyu.*` 任务，程序执行本地 `/api/reply`、`/api/order_detail`、`/api/adjust_price`、`/api/consign_dummy`、`/api/cancel_order` 后回传 `task.result`。
 

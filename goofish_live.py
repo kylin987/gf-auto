@@ -72,9 +72,6 @@ def _is_transient_network_error(exc):
 
 
 class XianyuLive:
-    SESSION_OPEN_MAX_AGE_MS = 120000
-    NEW_SESSION_MAX_DELAY_MS = 120000
-
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
                  heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
                  login_state_callback=None,
@@ -129,6 +126,7 @@ class XianyuLive:
         self._seen_protocol_frames = set()
         self._seen_parse_failures = set()
         self._seen_status_events = set()
+        self._seen_session_open_skips = set()
         self._recent_order_ids_by_cid = {}
         self._uploaded_media_by_source = {}
         self._media_upload_lock = threading.RLock()
@@ -288,7 +286,7 @@ class XianyuLive:
             return False
         return str(content.get('contentType') or '').strip() in ('8', '11')
 
-    def _simplify_session_opened(self, message, now_ms=None):
+    def _simplify_session_opened(self, message):
         if not isinstance(message, dict):
             return None
         operation = message.get('operation')
@@ -298,20 +296,17 @@ class XianyuLive:
         arouse = content.get('sessionArouse')
         if not isinstance(arouse, dict) or str(arouse.get('memberFlags') or '') != '1':
             return None
-        arouse_info = arouse.get('sessionArouseInfo')
         session_info = operation.get('sessionInfo')
-        if not isinstance(arouse_info, dict) or not isinstance(session_info, dict):
+        if not isinstance(session_info, dict):
             return None
+        arouse_info = arouse.get('sessionArouseInfo')
+        arouse_info = arouse_info if isinstance(arouse_info, dict) else {}
         try:
             arouse_time = int(arouse_info.get('arouseTimeStamp') or 0)
             create_time = int(session_info.get('createTime') or 0)
         except (TypeError, ValueError):
-            return None
-        current_time = int(time.time() * 1000) if now_ms is None else int(now_ms)
-        if arouse_time <= 0 or abs(current_time - arouse_time) > self.SESSION_OPEN_MAX_AGE_MS:
-            return None
-        if create_time <= 0 or arouse_time < create_time or arouse_time - create_time > self.NEW_SESSION_MAX_DELAY_MS:
-            return None
+            arouse_time = 0
+            create_time = 0
 
         session_id = str(session_info.get('sessionId') or message.get('sessionId') or '').strip()
         extensions = session_info.get('extensions')
@@ -333,6 +328,29 @@ class XianyuLive:
             'time': str(arouse_time),
             'sessionCreateTime': str(create_time),
         }
+
+    def _log_session_open_skip_once(self, message):
+        operation = message.get('operation') if isinstance(message, dict) else None
+        content = operation.get('content') if isinstance(operation, dict) else None
+        arouse = content.get('sessionArouse') if isinstance(content, dict) else None
+        if not isinstance(arouse, dict) or str(arouse.get('memberFlags') or '') != '1':
+            return
+        session_info = operation.get('sessionInfo') if isinstance(operation, dict) else None
+        session_info = session_info if isinstance(session_info, dict) else {}
+        extensions = session_info.get('extensions')
+        extensions = extensions if isinstance(extensions, dict) else {}
+        missing = []
+        if not str(session_info.get('sessionId') or message.get('sessionId') or '').strip():
+            missing.append('sessionId')
+        if not str(extensions.get('extUserId') or '').strip():
+            missing.append('buyerId')
+        reason = ','.join(missing) or '结构不完整'
+        seen = getattr(self, '_seen_session_open_skips', set())
+        if reason in seen:
+            return
+        seen.add(reason)
+        self._seen_session_open_skips = seen
+        logger.warning(f'闲鱼买家进入会话事件未上报：缺少 {reason}')
 
     def _is_self_message(self, message):
         """闲鱼会把店铺发出的消息回显到同步流，不能再当作买家消息上报。"""
@@ -1589,6 +1607,7 @@ class XianyuLive:
                         )
                 continue
             if self._is_background_sync_event(parsed):
+                self._log_session_open_skip_once(parsed)
                 continue
             structure, first_seen = self._log_message_structure(parsed)
             if self._is_status_event(parsed):

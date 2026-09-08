@@ -7,7 +7,7 @@ from goofish_live import XianyuLive
 
 
 class SessionOpenEventTest(unittest.TestCase):
-    def test_fresh_new_session_arouse_is_reported_to_gateway(self):
+    def test_session_arouse_is_reported_to_gateway(self):
         now_ms = int(time.time() * 1000)
         live = XianyuLive.__new__(XianyuLive)
         live._seen_structures = set()
@@ -53,14 +53,24 @@ class SessionOpenEventTest(unittest.TestCase):
             'session_opened:203:63655953794',
         )
 
-    def test_stale_or_existing_session_arouse_is_not_reported(self):
+    def test_existing_session_arouse_is_reported_and_outbox_handles_freshness(self):
         now_ms = int(time.time() * 1000)
         live = XianyuLive.__new__(XianyuLive)
-        stale = self._session_event(now_ms - 300000, now_ms - 301000, 'old-session', 'buyer-1')
         existing = self._session_event(now_ms, now_ms - 300000, 'existing-session', 'buyer-2')
 
-        self.assertIsNone(live._simplify_session_opened(stale, now_ms=now_ms))
-        self.assertIsNone(live._simplify_session_opened(existing, now_ms=now_ms))
+        payload = live._simplify_session_opened(existing)
+
+        self.assertEqual(payload['sessionId'], 'existing-session')
+        self.assertEqual(payload['buyerId'], 'buyer-2')
+        self.assertEqual(payload['time'], str(now_ms))
+
+    def test_seller_side_session_helper_is_not_reported(self):
+        now_ms = int(time.time() * 1000)
+        live = XianyuLive.__new__(XianyuLive)
+        seller_helper = self._session_event(now_ms, now_ms, 'session-1', 'buyer-1')
+        seller_helper['operation']['content']['sessionArouse']['memberFlags'] = 0
+
+        self.assertIsNone(live._simplify_session_opened(seller_helper))
 
     @staticmethod
     def _session_event(arouse_time, create_time, session_id, buyer_id):
