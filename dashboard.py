@@ -526,7 +526,7 @@ class XianyuDesktopApp:
                     live.stop()
                     return
                 self.lives[instance_id] = live
-                if not live.ensure_login():
+                if not live.ensure_login_with_retry():
                     raise RuntimeError('未能获取有效的闲鱼登录态')
                 if live._stop_event.is_set() or not self._is_current_run(instance_id, generation, current_thread):
                     return
@@ -574,7 +574,19 @@ class XianyuDesktopApp:
         self._refresh_current_view()
 
     def _force_relogin(self, instance):
-        if self._state(instance).get('status') in ('running', 'starting', 'login_required'):
+        status = self._state(instance).get('status')
+        if status == 'login_required':
+            live = self.lives.get(instance['id'])
+            if live is not None:
+                live.request_login_retry()
+                self.states.setdefault(instance['id'], {}).update({
+                    'status': 'login_required',
+                    'hint': '正在重新尝试登录当前店铺',
+                })
+                self._event(instance, 'system', '已立即重试当前店铺登录')
+                self._refresh_current_view()
+                return
+        if status in ('running', 'starting', 'login_required'):
             messagebox.showinfo('重新登录', '请先停止该店铺实例，再重新登录。', parent=self.root)
             return
         cookie_path = instance_cookie_file(instance['id'], self.pub_id)

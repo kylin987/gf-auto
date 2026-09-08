@@ -114,6 +114,7 @@ class XianyuLive:
         self._pending = {}
         self._reconnect_event = threading.Event()
         self._stop_event = threading.Event()
+        self._login_retry_event = threading.Event()
         self._relogin_lock = threading.Lock()
         self._login_state_lock = threading.RLock()
         self._login_valid = False
@@ -639,6 +640,31 @@ class XianyuLive:
         self._notify_login_state('running', '登录成功，正在监听消息')
         return True
 
+    def ensure_login_with_retry(self):
+        """实例启动时持续等待自己的登录态，单次超时不能结束监听线程。"""
+        while not self._stop_event.is_set():
+            if self.ensure_login():
+                return True
+            if self._stop_event.is_set():
+                return False
+            self._delay_auto_chrome_login()
+            cooldown = max(60, int(getattr(self, '_auto_login_cooldown', 900)))
+            cooldown_minutes = max(1, int((cooldown + 59) / 60))
+            logger.warning(f'店铺登录未完成，{cooldown_minutes} 分钟后自动重试')
+            self._notify_login_state(
+                'login_required',
+                f'Chrome 窗口已关闭，需要登录，{cooldown_minutes} 分钟后自动重试',
+            )
+            self._login_retry_event.wait(cooldown)
+            self._login_retry_event.clear()
+        return False
+
+    def request_login_retry(self):
+        """立即唤醒当前店铺的登录检测，不影响其他店铺。"""
+        self._auto_login_retry_at = 0.0
+        self._auto_login_notice_at = 0.0
+        self._login_retry_event.set()
+
     async def _close_im_websocket(self):
         websocket = self.ws
         if websocket is None:
@@ -659,6 +685,7 @@ class XianyuLive:
 
     def stop(self):
         self._stop_event.set()
+        self._login_retry_event.set()
         self._reconnect_event.set()
         self.stop_local_api()
         loop = self.loop
@@ -1317,7 +1344,9 @@ class XianyuLive:
 
     def user_alive(self):
         while not self._stop_event.is_set():
-            if self._stop_event.wait(self._seconds_until_login_check()):
+            self._login_retry_event.wait(self._seconds_until_login_check())
+            self._login_retry_event.clear()
+            if self._stop_event.is_set():
                 break
             if not self.check_login():
                 self.relogin()

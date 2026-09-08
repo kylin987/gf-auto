@@ -3,6 +3,7 @@ import threading
 import unittest
 from unittest.mock import Mock, call, patch
 
+import cookie_auth
 import dashboard
 from cookie_auth import fetch_cookies_via_chrome
 from goofish_live import XianyuLive
@@ -230,6 +231,24 @@ class InstanceLifecycleTest(unittest.TestCase):
             call('login_required', '登录超时，Chrome 窗口已关闭，等待自动重试'),
         ])
 
+    def test_initial_login_failure_keeps_retrying_until_success(self):
+        live = XianyuLive.__new__(XianyuLive)
+        live._stop_event = threading.Event()
+        live._login_retry_event = Mock()
+        live._auto_login_cooldown = 60
+        live.ensure_login = Mock(side_effect=[False, True])
+        live._delay_auto_chrome_login = Mock()
+        live._notify_login_state = Mock()
+
+        self.assertTrue(live.ensure_login_with_retry())
+
+        self.assertEqual(live.ensure_login.call_count, 2)
+        live._login_retry_event.wait.assert_called_once_with(60)
+        live._notify_login_state.assert_called_once_with(
+            'login_required',
+            'Chrome 窗口已关闭，需要登录，1 分钟后自动重试',
+        )
+
     def test_saved_cookie_recovery_reports_running_state(self):
         live = XianyuLive.__new__(XianyuLive)
         live.xianyu = Mock()
@@ -326,6 +345,32 @@ class InstanceLifecycleTest(unittest.TestCase):
 
         app._stop_instance.assert_called_once_with(instance)
 
+    def test_login_required_instance_can_retry_without_stopping(self):
+        app = self._app()
+        instance = {'id': 'store-a', 'name': '小影票务'}
+        live = Mock()
+        app.instances = [instance]
+        app.states['store-a'] = {'status': 'login_required'}
+        app.lives['store-a'] = live
+
+        app._force_relogin(instance)
+
+        live.request_login_retry.assert_called_once_with()
+        self.assertEqual(app.states['store-a']['hint'], '正在重新尝试登录当前店铺')
+        app._event.assert_called_once_with(instance, 'system', '已立即重试当前店铺登录')
+
+    def test_chrome_login_waits_for_other_store_slot(self):
+        lock = Mock()
+        lock.acquire.side_effect = [False, True]
+
+        with patch.object(cookie_auth, '_CHROME_LOGIN_LOCK', lock):
+            cookie_auth._acquire_chrome_login_slot()
+
+        self.assertEqual(lock.acquire.call_args_list, [
+            call(blocking=False),
+            call(timeout=0.5),
+        ])
+
     @patch('cookie_auth.subprocess.Popen')
     @patch('cookie_auth.find_chrome_binary', return_value='chrome.exe')
     def test_stopping_store_cancels_chrome_login_poll(self, find_chrome, popen):
@@ -340,7 +385,8 @@ class InstanceLifecycleTest(unittest.TestCase):
                 stop_event=stop_event,
             )
 
-        process.terminate.assert_called_once_with()
+        popen.assert_not_called()
+        process.terminate.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -21,6 +21,7 @@ LOGIN_URL = 'https://seller.goofish.com/'
 # 登录态与 IM token 的必要条件。tracknick 只用于展示昵称，_tb_token_ 也并非所有
 # seller.goofish.com 登录态都会写入；实际 token 校验成功才是最终判定。
 REQUIRED_COOKIES = {'unb', '_m_h5_tk', 'cookie2'}
+_CHROME_LOGIN_LOCK = threading.Lock()
 
 
 def _free_port():
@@ -236,8 +237,27 @@ async def _poll_login_cookies(ws_url, deadline, stop_event=None):
         raise TimeoutError('等待手动登录/获取 token 超时')
 
 
+def _acquire_chrome_login_slot(stop_event=None):
+    if stop_event is not None and stop_event.is_set():
+        raise InterruptedError('登录流程已停止')
+    if _CHROME_LOGIN_LOCK.acquire(blocking=False):
+        return
+    logger.info('其他店铺正在恢复 Chrome 登录态，当前店铺排队等待')
+    while not _CHROME_LOGIN_LOCK.acquire(timeout=0.5):
+        if stop_event is not None and stop_event.is_set():
+            raise InterruptedError('登录流程已停止')
+
+
 def fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=None, stop_event=None):
-    """启动本机 Chrome 打开卖家中心，等待手动登录后通过 CDP 获取 cookie。"""
+    """串行启动独立 Chrome，避免多店铺同时登录相互干扰。"""
+    _acquire_chrome_login_slot(stop_event)
+    try:
+        return _fetch_cookies_via_chrome(url, timeout, profile_dir, port, stop_event)
+    finally:
+        _CHROME_LOGIN_LOCK.release()
+
+
+def _fetch_cookies_via_chrome(url=LOGIN_URL, timeout=300, profile_dir=None, port=None, stop_event=None):
     chrome = os.environ.get('XY_CHROME_PATH') or find_chrome_binary()
     if not chrome:
         raise RuntimeError('未找到 Google Chrome，请安装或设置 XY_CHROME_PATH')
