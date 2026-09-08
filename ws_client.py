@@ -172,6 +172,7 @@ class GatewayClient:
     """连接 yhs-plugin-gateway：登录后 bind、心跳、业务消息转发与回复。"""
 
     BUYER_CHAT_MAX_AGE_SECONDS = 600
+    SESSION_OPEN_MAX_AGE_SECONDS = 120
 
     def __init__(self, token, ws_url=None, store_id=None, instance_id='', chrome_logged_in=None,
                  reply_url='http://127.0.0.1:8000/api/reply', stop_event=None, outbox=None,
@@ -301,7 +302,7 @@ class GatewayClient:
         self._next_auth_refresh_at = 0
         return token != stale_token
 
-    async def send(self, data):
+    async def send(self, data, dedupe_key=None):
         """Persist a buyer event first; the outbox worker sends it after bind."""
         payload = dict(data or {})
         if self.store_id is not None:
@@ -318,7 +319,12 @@ class GatewayClient:
         }
         if self.outbox is None:
             raise RuntimeError('xianyu.message Outbox 未配置')
-        await asyncio.to_thread(self.outbox.enqueue, message_id, message)
+        if dedupe_key:
+            queued = await asyncio.to_thread(self.outbox.enqueue_once, dedupe_key, message_id, message)
+        else:
+            queued = await asyncio.to_thread(self.outbox.enqueue, message_id, message)
+        if not queued:
+            return False
         if self.ws is None:
             logger.warning(f'插件网关未连接，买家事件已保存等待补发：messageId={message_id}')
         self._outbox_wakeup.set()
@@ -342,7 +348,11 @@ class GatewayClient:
             if self._is_expired_buyer_chat(row):
                 message_id = row['message_id']
                 await asyncio.to_thread(self.outbox.remove, message_id)
-                logger.warning(f'已丢弃超过10分钟的买家聊天补发事件：messageId={message_id}')
+                payload = (row.get('payload') or {}).get('payload') or {}
+                if payload.get('eventName') == 'session_opened':
+                    logger.warning(f'已丢弃超过2分钟的首次进入会话补发事件：messageId={message_id}')
+                else:
+                    logger.warning(f'已丢弃超过10分钟的买家聊天补发事件：messageId={message_id}')
                 continue
             retry_wait = max(0, row['next_attempt_at'] - datetime.now().timestamp())
             if retry_wait > 0:
@@ -378,11 +388,12 @@ class GatewayClient:
     def _is_expired_buyer_chat(cls, row, now=None):
         message = row.get('payload') if isinstance(row, dict) else {}
         payload = message.get('payload') if isinstance(message, dict) else {}
+        event_name = str(payload.get('eventName') or '')
         try:
             content_type = int(payload.get('contentType') or 0)
         except (TypeError, ValueError):
             return False
-        if content_type not in (1, 2):
+        if content_type not in (1, 2) and event_name != 'session_opened':
             return False
 
         event_time = 0.0
@@ -397,7 +408,8 @@ class GatewayClient:
             except (TypeError, ValueError):
                 event_time = float(row.get('create_time') or 0)
         current_time = datetime.now().timestamp() if now is None else float(now)
-        return event_time > 0 and current_time - event_time > cls.BUYER_CHAT_MAX_AGE_SECONDS
+        max_age = cls.SESSION_OPEN_MAX_AGE_SECONDS if event_name == 'session_opened' else cls.BUYER_CHAT_MAX_AGE_SECONDS
+        return event_time > 0 and current_time - event_time > max_age
 
     def _fail_pending_event_acks(self, exc):
         futures = list(self._pending_event_acks.values())
@@ -757,6 +769,8 @@ class GatewayClient:
     def _describe_platform_message(self, payload):
         content_type = int(payload.get('contentType') or 0)
         buyer = payload.get('reminderTitle') or payload.get('buyerNick') or payload.get('senderUserId') or ''
+        if payload.get('eventName') == 'session_opened':
+            return f'首次进入会话 买家={buyer} 会话={payload.get("sessionId") or payload.get("cid") or ""}'
         if content_type == 1:
             return f'文字 买家={buyer} 内容={self._short_text(payload.get("text"))}'
         if content_type == 2:

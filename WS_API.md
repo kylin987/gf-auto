@@ -152,6 +152,10 @@ wss://plugin-gateway.yinghuasuan.com/ws
 
 订单消息需要尽量带上 `orderId/cid/senderUserId/reminderTitle/itemId/time`，其中 `orderId` 是后续改价、查详情和建单的关键字段。
 
+买家首次进入新会话时仍使用 `xianyu.message`，客户端将原始 `sessionArouse` 归一为
+`contentType=8`、`eventName=session_opened`，并携带 `sessionId/cid/senderUserId/itemId/time`。
+该事件只接受 2 分钟内的新建会话，并按 `storeId + sessionId` 在本地持久化去重。
+
 ## 6. contentType 说明
 
 | contentType | 含义 | 当前是否上报网关 |
@@ -162,6 +166,7 @@ wss://plugin-gateway.yinghuasuan.com/ws
 | `4` | 用户已付款，待发货 | 是 |
 | `5` | 用户发起退款 | 是 |
 | `6` | 用户关闭未付款订单 | 是 |
+| `8` + `eventName=session_opened` | 买家首次进入新会话 | 是 |
 
 闲鱼原始订单卡片消息的 `contentType=26`，客户端会映射为 `3/4/5` 后上报网关。订单关闭系统通知通常为原始 `contentType=14/28`，客户端映射为 `6`；通知未带订单号时，仅使用同会话最近收到的订单号作为兜底。
 

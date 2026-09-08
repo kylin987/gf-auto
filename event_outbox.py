@@ -40,6 +40,12 @@ class EventOutbox:
                 CREATE INDEX IF NOT EXISTS idx_event_outbox_pending
                 ON event_outbox (status, next_attempt_at, create_time)
             ''')
+            connection.execute('''
+                CREATE TABLE IF NOT EXISTS event_dedupe (
+                    event_key TEXT PRIMARY KEY,
+                    create_time REAL NOT NULL
+                )
+            ''')
 
     def enqueue(self, message_id, payload):
         now = time.time()
@@ -52,6 +58,24 @@ class EventOutbox:
                 ) VALUES (?, ?, 'pending', 0, '', 0, ?, ?)
             ''', (str(message_id), payload_json, now, now))
             return cursor.rowcount > 0
+
+    def enqueue_once(self, event_key, message_id, payload):
+        now = time.time()
+        payload_json = json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                'INSERT OR IGNORE INTO event_dedupe (event_key, create_time) VALUES (?, ?)',
+                (str(event_key), now),
+            )
+            if cursor.rowcount <= 0:
+                return False
+            connection.execute('''
+                INSERT INTO event_outbox (
+                    message_id, payload_json, status, attempts, last_error,
+                    next_attempt_at, create_time, update_time
+                ) VALUES (?, ?, 'pending', 0, '', 0, ?, ?)
+            ''', (str(message_id), payload_json, now, now))
+            return True
 
     def oldest_pending(self):
         with self._lock, self._connect() as connection:

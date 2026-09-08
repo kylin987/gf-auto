@@ -45,6 +45,17 @@ class EventOutboxTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reopened.count(), 1)
         self.assertEqual(reopened.oldest_pending()['payload'], payload)
 
+    def test_session_open_event_uses_persistent_dedupe_key(self):
+        outbox = EventOutbox(self.database_path)
+        payload = {'id': 'xianyu_session_opened_123', 'payload': {'eventName': 'session_opened'}}
+
+        self.assertTrue(outbox.enqueue_once('session_opened:123', 'xianyu_session_opened_123', payload))
+        outbox.remove('xianyu_session_opened_123')
+
+        reopened = EventOutbox(self.database_path)
+        self.assertFalse(reopened.enqueue_once('session_opened:123', 'xianyu_session_opened_123', payload))
+        self.assertEqual(reopened.count(), 0)
+
     def test_failed_oldest_message_blocks_newer_message(self):
         outbox = EventOutbox(self.database_path)
         outbox.enqueue('fish_1', {'id': 'fish_1'})
@@ -80,6 +91,22 @@ class EventOutboxTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reopened.count(), 0)
         self.assertEqual(websocket.messages[0]['id'], 'fish_1')
         self.assertEqual(websocket.messages[0]['payload']['storeId'], 203)
+
+    async def test_session_open_send_is_deduplicated_after_gateway_ack(self):
+        outbox = EventOutbox(self.database_path)
+        client = GatewayClient('token', store_id=203, outbox=outbox)
+        payload = {
+            'messageId': 'xianyu_session_opened_123',
+            'contentType': 8,
+            'eventName': 'session_opened',
+            'sessionId': '123',
+            'time': str(int(time.time() * 1000)),
+        }
+
+        self.assertTrue(await client.send(payload, dedupe_key='session_opened:123'))
+        outbox.remove(payload['messageId'])
+        self.assertFalse(await client.send(payload, dedupe_key='session_opened:123'))
+        self.assertEqual(outbox.count(), 0)
 
     async def test_gateway_rejection_blocks_message(self):
         outbox = EventOutbox(self.database_path)
@@ -131,6 +158,22 @@ class EventOutboxTest(unittest.IsolatedAsyncioTestCase):
         }
 
         self.assertFalse(GatewayClient._is_expired_buyer_chat(row, now=time.time()))
+
+    def test_old_session_open_event_expires_from_outbox(self):
+        old_time = time.time() - GatewayClient.SESSION_OPEN_MAX_AGE_SECONDS - 1
+        row = {
+            'create_time': old_time,
+            'payload': {
+                'sentAt': '2026-08-30T00:00:00+08:00',
+                'payload': {
+                    'contentType': 8,
+                    'eventName': 'session_opened',
+                    'time': str(int(old_time * 1000)),
+                },
+            },
+        }
+
+        self.assertTrue(GatewayClient._is_expired_buyer_chat(row, now=time.time()))
 
 
 if __name__ == '__main__':

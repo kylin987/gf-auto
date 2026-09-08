@@ -72,6 +72,9 @@ def _is_transient_network_error(exc):
 
 
 class XianyuLive:
+    SESSION_OPEN_MAX_AGE_MS = 120000
+    NEW_SESSION_MAX_DELAY_MS = 120000
+
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
                  heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
                  login_state_callback=None,
@@ -284,6 +287,52 @@ class XianyuLive:
         if not isinstance(content, dict):
             return False
         return str(content.get('contentType') or '').strip() in ('8', '11')
+
+    def _simplify_session_opened(self, message, now_ms=None):
+        if not isinstance(message, dict):
+            return None
+        operation = message.get('operation')
+        content = operation.get('content') if isinstance(operation, dict) else None
+        if not isinstance(content, dict) or str(content.get('contentType') or '') != '8':
+            return None
+        arouse = content.get('sessionArouse')
+        if not isinstance(arouse, dict) or str(arouse.get('memberFlags') or '') != '1':
+            return None
+        arouse_info = arouse.get('sessionArouseInfo')
+        session_info = operation.get('sessionInfo')
+        if not isinstance(arouse_info, dict) or not isinstance(session_info, dict):
+            return None
+        try:
+            arouse_time = int(arouse_info.get('arouseTimeStamp') or 0)
+            create_time = int(session_info.get('createTime') or 0)
+        except (TypeError, ValueError):
+            return None
+        current_time = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        if arouse_time <= 0 or abs(current_time - arouse_time) > self.SESSION_OPEN_MAX_AGE_MS:
+            return None
+        if create_time <= 0 or arouse_time < create_time or arouse_time - create_time > self.NEW_SESSION_MAX_DELAY_MS:
+            return None
+
+        session_id = str(session_info.get('sessionId') or message.get('sessionId') or '').strip()
+        extensions = session_info.get('extensions')
+        extensions = extensions if isinstance(extensions, dict) else {}
+        buyer_id = str(extensions.get('extUserId') or '').strip()
+        if not session_id or not buyer_id:
+            return None
+
+        return {
+            'messageId': f'xianyu_session_opened_{session_id}',
+            'contentType': 8,
+            'eventName': 'session_opened',
+            'cid': session_id,
+            'sessionId': session_id,
+            'senderUserId': buyer_id,
+            'buyerId': buyer_id,
+            'itemId': str(extensions.get('itemId') or ''),
+            'itemTitle': str(extensions.get('itemTitle') or ''),
+            'time': str(arouse_time),
+            'sessionCreateTime': str(create_time),
+        }
 
     def _is_self_message(self, message):
         """闲鱼会把店铺发出的消息回显到同步流，不能再当作买家消息上报。"""
@@ -1525,6 +1574,19 @@ class XianyuLive:
             if parsed is None:
                 self._save_unparsed_message(raw)
                 self._log_parse_failure_once(raw, self._last_parse_error)
+                continue
+            session_opened = self._simplify_session_opened(parsed)
+            if session_opened is not None:
+                self._save_raw_message(session_opened)
+                if self.ws_client is not None:
+                    store_id = int(getattr(self, 'store_id', 0) or 0)
+                    dedupe_key = f'session_opened:{store_id}:{session_opened["sessionId"]}'
+                    queued = await self.ws_client.send(session_opened, dedupe_key=dedupe_key)
+                    if queued:
+                        logger.info(
+                            f'检测到买家首次进入会话：买家={session_opened["buyerId"]} '
+                            f'商品={session_opened["itemId"]}'
+                        )
                 continue
             if self._is_background_sync_event(parsed):
                 continue
