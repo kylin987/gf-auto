@@ -50,7 +50,11 @@ class SessionOpenEventTest(unittest.TestCase):
         self.assertEqual(payload['itemId'], '1064670207000')
         self.assertEqual(
             live.ws_client.send.await_args.kwargs['dedupe_key'],
-            'session_opened:203:63655953794',
+            'session_opened:203:2803308075:1064670207000',
+        )
+        self.assertEqual(
+            payload['messageId'],
+            'xianyu_session_opened_63655953794_1064670207000',
         )
 
     def test_existing_session_arouse_is_reported_and_outbox_handles_freshness(self):
@@ -144,13 +148,13 @@ class SessionOpenEventTest(unittest.TestCase):
             self.assertEqual(payload['itemId'], 'item-1')
             self.assertEqual(
                 live.ws_client.send.await_args.kwargs['dedupe_key'],
-                'session_opened:203:new-cid',
+                'session_opened:203:buyer-1:item-1',
             )
             self.assertNotIn('new-cid', live._session_open_candidates)
 
         asyncio.run(run_test())
 
-    def test_old_typing_candidate_is_not_reported(self):
+    def test_existing_buyer_conversation_for_new_item_is_reported(self):
         now_ms = int(time.time() * 1000)
         live = XianyuLive.__new__(XianyuLive)
         live.myid = 'seller-1'
@@ -171,7 +175,40 @@ class SessionOpenEventTest(unittest.TestCase):
             }],
         }
 
-        self.assertIsNone(live._new_conversation_payload('old-cid', response, now_ms=now_ms))
+        payload = live._new_conversation_payload('old-cid', response, now_ms=now_ms)
+
+        self.assertEqual(payload['buyerId'], 'buyer-1')
+        self.assertEqual(payload['itemId'], 'item-1')
+        self.assertEqual(payload['time'], str(now_ms))
+        self.assertEqual(payload['messageId'], 'xianyu_session_opened_old-cid_item-1')
+
+    def test_same_conversation_uses_different_dedupe_keys_for_different_items(self):
+        async def run_test():
+            live = XianyuLive.__new__(XianyuLive)
+            live.store_id = 203
+            live._save_raw_message = Mock()
+            live.ws_client = Mock()
+            live.ws_client.send = AsyncMock(return_value=True)
+
+            first = {
+                'sessionId': 'same-cid',
+                'buyerId': 'buyer-1',
+                'itemId': 'item-1',
+            }
+            second = {**first, 'itemId': 'item-2'}
+
+            await live._report_session_opened(first)
+            await live._report_session_opened(second)
+
+            self.assertEqual(
+                [call.kwargs['dedupe_key'] for call in live.ws_client.send.await_args_list],
+                [
+                    'session_opened:203:buyer-1:item-1',
+                    'session_opened:203:buyer-1:item-2',
+                ],
+            )
+
+        asyncio.run(run_test())
 
     def test_conversation_for_another_seller_is_not_reported(self):
         now_ms = int(time.time() * 1000)
@@ -209,7 +246,7 @@ class SessionOpenEventTest(unittest.TestCase):
                 'sessionInfo': {
                     'createTime': create_time,
                     'sessionId': session_id,
-                    'extensions': {'extUserId': buyer_id},
+                    'extensions': {'extUserId': buyer_id, 'itemId': 'item-1'},
                 },
             },
         }

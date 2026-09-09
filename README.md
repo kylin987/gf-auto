@@ -125,7 +125,7 @@ python goofish_live.py --debug
 
 桌面版按子账号和店铺隔离运行数据，路径为 `%LOCALAPPDATA%\yhs-fish-plugin\pubs\<pubId>\instances\<instanceId>`。其中包含 Cookie、Chrome Profile、聊天日志和待上报事件数据库。升级后会从旧 `instances\<instanceId>` 目录复制缺失数据，但不会覆盖新目录已有文件。
 
-闲鱼的买家进入会话通知会按会话去重后上报；输入状态仅作为候选信号，查询确认会话刚创建并补齐买家、商品后才会上报。批量补发的过期会话唤醒、智能话术和商品定价通知会被静默忽略。其他能够解码但尚未识别业务类型的同步消息按结构保留一个样本到 `chat_YYYY-MM-DD.jsonl`，界面也只提示一次。只有 JSON、解密和 Base64 均失败时才生成 `unparsed_YYYY-MM-DD.jsonl`。
+闲鱼的买家进入商品会话通知会按店铺、买家和商品去重后上报；输入状态仅作为候选信号，查询补齐当前店铺、买家和商品后才会上报，旧买家首次咨询新商品也会触发。批量补发的过期会话唤醒、智能话术和商品定价通知会被静默忽略。其他能够解码但尚未识别业务类型的同步消息按结构保留一个样本到 `chat_YYYY-MM-DD.jsonl`，界面也只提示一次。只有 JSON、解密和 Base64 均失败时才生成 `unparsed_YYYY-MM-DD.jsonl`。
 
 被忽略的 `contentType=8` 和状态类同步包会限量写入 `sync_diagnostic_YYYY-MM-DD.jsonl`，用于协议排查；每次运行最多记录 50 条，不上报网关。
 

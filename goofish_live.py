@@ -73,7 +73,6 @@ def _is_transient_network_error(exc):
 
 class XianyuLive:
     SYNC_DIAGNOSTIC_LIMIT = 50
-    NEW_CONVERSATION_MAX_AGE_MS = 120000
 
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
                  heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
@@ -348,15 +347,19 @@ class XianyuLive:
         if not session_id or not buyer_id:
             return None
 
+        item_id = str(extensions.get('itemId') or '').strip()
+        if not item_id:
+            return None
+
         return {
-            'messageId': f'xianyu_session_opened_{session_id}',
+            'messageId': f'xianyu_session_opened_{session_id}_{item_id}',
             'contentType': 8,
             'eventName': 'session_opened',
             'cid': session_id,
             'sessionId': session_id,
             'senderUserId': buyer_id,
             'buyerId': buyer_id,
-            'itemId': str(extensions.get('itemId') or ''),
+            'itemId': item_id,
             'itemTitle': str(extensions.get('itemTitle') or ''),
             'time': str(arouse_time),
             'sessionCreateTime': str(create_time),
@@ -377,6 +380,8 @@ class XianyuLive:
             missing.append('sessionId')
         if not str(extensions.get('extUserId') or '').strip():
             missing.append('buyerId')
+        if not str(extensions.get('itemId') or '').strip():
+            missing.append('itemId')
         reason = ','.join(missing) or '结构不完整'
         seen = getattr(self, '_seen_session_open_skips', set())
         if reason in seen:
@@ -426,12 +431,9 @@ class XianyuLive:
             try:
                 create_time = int(_first_field(chat, 'createAt', '4') or 0)
             except (TypeError, ValueError):
-                return None
+                create_time = 0
             if 0 < create_time < 100000000000:
                 create_time *= 1000
-            age = current_time - create_time
-            if create_time <= 0 or age < -30000 or age > self.NEW_CONVERSATION_MAX_AGE_MS:
-                return None
 
             pair_first = str(_first_field(chat, 'pairFirst', '2') or '').split('@')[0]
             pair_second = str(_first_field(chat, 'pairSecond', '3') or '').split('@')[0]
@@ -447,7 +449,7 @@ class XianyuLive:
             if not buyer_id or not item_id:
                 return None
             return {
-                'messageId': f'xianyu_session_opened_{target_cid}',
+                'messageId': f'xianyu_session_opened_{target_cid}_{item_id}',
                 'contentType': 8,
                 'eventName': 'session_opened',
                 'cid': target_cid,
@@ -462,11 +464,18 @@ class XianyuLive:
         return None
 
     async def _report_session_opened(self, payload):
+        session_id = str(payload.get('sessionId') or payload.get('cid') or '').strip()
+        buyer_id = str(payload.get('buyerId') or payload.get('senderUserId') or '').strip()
+        item_id = str(payload.get('itemId') or '').strip()
+        if not session_id or not buyer_id or not item_id:
+            logger.warning('闲鱼买家进入会话事件未上报：缺少 sessionId、buyerId 或 itemId')
+            return False
+        payload['messageId'] = f'xianyu_session_opened_{session_id}_{item_id}'
         self._save_raw_message(payload)
         if self.ws_client is None:
             return False
         store_id = int(getattr(self, 'store_id', 0) or 0)
-        dedupe_key = f'session_opened:{store_id}:{payload["sessionId"]}'
+        dedupe_key = f'session_opened:{store_id}:{buyer_id}:{item_id}'
         queued = await self.ws_client.send(payload, dedupe_key=dedupe_key)
         if queued:
             logger.info(f'检测到买家首次进入会话：买家={payload["buyerId"]} 商品={payload["itemId"]}')
