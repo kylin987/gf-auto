@@ -96,6 +96,105 @@ class SessionOpenEventTest(unittest.TestCase):
         self.assertEqual(live._save_sync_diagnostic.call_args_list[0].args[0], 'background_content_8')
         self.assertEqual(live._save_sync_diagnostic.call_args_list[1].args[0], 'status_event')
 
+    def test_typing_status_extracts_candidate_for_current_seller(self):
+        item = {'bizType': 40, 'objectType': 40006}
+        message = {'1': [
+            {'1': 'new-cid@goofish', '2': 1, '3': 1, '4': 'seller-1@goofish'},
+            {'1': 'other-cid@goofish', '2': 0, '3': 0, '4': 'seller-2@goofish'},
+        ]}
+
+        self.assertEqual(
+            XianyuLive._typing_candidate_cids(item, message, 'seller-1'),
+            ['new-cid'],
+        )
+
+    def test_fresh_typing_candidate_queries_conversation_and_reports_session(self):
+        async def run_test():
+            now_ms = int(time.time() * 1000)
+            live = XianyuLive.__new__(XianyuLive)
+            live.myid = 'seller-1'
+            live.store_id = 203
+            live._session_open_candidates = {'new-cid'}
+            live._save_raw_message = Mock()
+            live._save_sync_diagnostic = Mock()
+            live.ws_client = Mock()
+            live.ws_client.send = AsyncMock(return_value=True)
+            live._request = AsyncMock(return_value={
+                'code': 200,
+                'body': [{
+                    'type': 1,
+                    'singleChatUserConversation': {
+                        'singleChatConversation': {
+                            'cid': 'new-cid@goofish',
+                            'pairFirst': 'buyer-1@goofish',
+                            'pairSecond': 'seller-1@goofish',
+                            'createAt': now_ms - 1000,
+                            'extension': {'itemId': 'item-1', 'itemTitle': '电影票'},
+                        },
+                    },
+                }],
+            })
+
+            await live._handle_typing_candidate('new-cid', Mock())
+
+            self.assertEqual(live._request.await_args.args[1], '/r/Conversation/getByCids')
+            self.assertEqual(live._request.await_args.args[2], [['new-cid@goofish']])
+            payload = live.ws_client.send.await_args.args[0]
+            self.assertEqual(payload['buyerId'], 'buyer-1')
+            self.assertEqual(payload['itemId'], 'item-1')
+            self.assertEqual(
+                live.ws_client.send.await_args.kwargs['dedupe_key'],
+                'session_opened:203:new-cid',
+            )
+            self.assertNotIn('new-cid', live._session_open_candidates)
+
+        asyncio.run(run_test())
+
+    def test_old_typing_candidate_is_not_reported(self):
+        now_ms = int(time.time() * 1000)
+        live = XianyuLive.__new__(XianyuLive)
+        live.myid = 'seller-1'
+        live.ws_client = Mock()
+        response = {
+            'code': 200,
+            'body': [{
+                '1': 1,
+                '2': {
+                    '1': {
+                        '1': 'old-cid@goofish',
+                        '2': 'buyer-1@goofish',
+                        '3': 'seller-1@goofish',
+                        '4': now_ms - 300000,
+                        '6': {'itemId': 'item-1'},
+                    },
+                },
+            }],
+        }
+
+        self.assertIsNone(live._new_conversation_payload('old-cid', response, now_ms=now_ms))
+
+    def test_conversation_for_another_seller_is_not_reported(self):
+        now_ms = int(time.time() * 1000)
+        live = XianyuLive.__new__(XianyuLive)
+        live.myid = 'seller-1'
+        response = {
+            'code': 200,
+            'body': [{
+                'type': 1,
+                'singleChatUserConversation': {
+                    'singleChatConversation': {
+                        'cid': 'new-cid',
+                        'pairFirst': 'buyer-1',
+                        'pairSecond': 'seller-2',
+                        'createAt': now_ms,
+                        'extension': {'itemId': 'item-1'},
+                    },
+                },
+            }],
+        }
+
+        self.assertIsNone(live._new_conversation_payload('new-cid', response, now_ms=now_ms))
+
     @staticmethod
     def _session_event(arouse_time, create_time, session_id, buyer_id):
         return {

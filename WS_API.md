@@ -154,6 +154,8 @@ wss://plugin-gateway.yinghuasuan.com/ws
 
 买家首次进入新会话时仍使用 `xianyu.message`，客户端将原始 `sessionArouse` 归一为
 `contentType=8`、`eventName=session_opened`，并携带 `sessionId/cid/senderUserId/itemId/time`。
+闲鱼未直接下发 `sessionArouse` 时，客户端会把 `objectType=40006` 输入状态作为候选信号，
+通过 `/r/Conversation/getByCids` 确认会话确实在 2 分钟内新建并补齐买家、商品信息后再上报。
 该事件按 `storeId + sessionId` 在本地持久化去重，每个会话只上报一次；超过 2 分钟的历史补发由 Outbox 丢弃。
 
 ## 6. contentType 说明

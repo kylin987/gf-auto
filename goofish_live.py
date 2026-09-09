@@ -73,6 +73,7 @@ def _is_transient_network_error(exc):
 
 class XianyuLive:
     SYNC_DIAGNOSTIC_LIMIT = 50
+    NEW_CONVERSATION_MAX_AGE_MS = 120000
 
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
                  heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
@@ -130,6 +131,7 @@ class XianyuLive:
         self._seen_status_events = set()
         self._seen_session_open_skips = set()
         self._sync_diagnostic_count = 0
+        self._session_open_candidates = set()
         self._recent_order_ids_by_cid = {}
         self._uploaded_media_by_source = {}
         self._media_upload_lock = threading.RLock()
@@ -382,6 +384,120 @@ class XianyuLive:
         seen.add(reason)
         self._seen_session_open_skips = seen
         logger.warning(f'闲鱼买家进入会话事件未上报：缺少 {reason}')
+
+    @staticmethod
+    def _typing_candidate_cids(item, message, seller_id=''):
+        if not isinstance(item, dict) or str(item.get('objectType') or '') != '40006':
+            return []
+        models = _first_field(message, 'typingModels', '1')
+        if isinstance(models, dict):
+            models = [models]
+        if not isinstance(models, list):
+            return []
+        seller_id = str(seller_id or '').split('@')[0]
+        candidates = []
+        for model in models:
+            cid = str(_first_field(model, 'conversationId', '1') or '').split('@')[0]
+            receiver = str(_first_field(model, 'receiver', '4') or '').split('@')[0]
+            if not cid or (seller_id and receiver and receiver != seller_id):
+                continue
+            if cid not in candidates:
+                candidates.append(cid)
+        return candidates
+
+    def _new_conversation_payload(self, cid, response, now_ms=None):
+        if not isinstance(response, dict) or str(response.get('code') or '200') != '200':
+            return None
+        conversations = response.get('body') or []
+        if isinstance(conversations, dict):
+            conversations = _first_field(conversations, 'userConvModels', 'userConvs', '1') or []
+        if not isinstance(conversations, list):
+            return None
+
+        target_cid = str(cid or '').split('@')[0]
+        seller_id = str(getattr(self, 'myid', '') or '').split('@')[0]
+        current_time = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        for conversation in conversations:
+            single = _first_field(conversation, 'singleChatUserConversation', '2')
+            chat = _first_field(single, 'singleChatConversation', '1')
+            conversation_id = str(_first_field(chat, 'cid', '1') or '').split('@')[0]
+            if conversation_id != target_cid:
+                continue
+            try:
+                create_time = int(_first_field(chat, 'createAt', '4') or 0)
+            except (TypeError, ValueError):
+                return None
+            if 0 < create_time < 100000000000:
+                create_time *= 1000
+            age = current_time - create_time
+            if create_time <= 0 or age < -30000 or age > self.NEW_CONVERSATION_MAX_AGE_MS:
+                return None
+
+            pair_first = str(_first_field(chat, 'pairFirst', '2') or '').split('@')[0]
+            pair_second = str(_first_field(chat, 'pairSecond', '3') or '').split('@')[0]
+            if not seller_id or seller_id not in (pair_first, pair_second):
+                return None
+            buyer_id = pair_second if pair_first == seller_id else pair_first
+            extension = _first_field(chat, 'extension', '6')
+            extension = extension if isinstance(extension, dict) else {}
+            user_extension = _first_field(single, 'user_extension', '9')
+            user_extension = user_extension if isinstance(user_extension, dict) else {}
+            item_id = str(extension.get('itemId') or user_extension.get('itemId') or '').strip()
+            item_title = str(extension.get('itemTitle') or user_extension.get('itemTitle') or '').strip()
+            if not buyer_id or not item_id:
+                return None
+            return {
+                'messageId': f'xianyu_session_opened_{target_cid}',
+                'contentType': 8,
+                'eventName': 'session_opened',
+                'cid': target_cid,
+                'sessionId': target_cid,
+                'senderUserId': buyer_id,
+                'buyerId': buyer_id,
+                'itemId': item_id,
+                'itemTitle': item_title,
+                'time': str(current_time),
+                'sessionCreateTime': str(create_time),
+            }
+        return None
+
+    async def _report_session_opened(self, payload):
+        self._save_raw_message(payload)
+        if self.ws_client is None:
+            return False
+        store_id = int(getattr(self, 'store_id', 0) or 0)
+        dedupe_key = f'session_opened:{store_id}:{payload["sessionId"]}'
+        queued = await self.ws_client.send(payload, dedupe_key=dedupe_key)
+        if queued:
+            logger.info(f'检测到买家首次进入会话：买家={payload["buyerId"]} 商品={payload["itemId"]}')
+        return queued
+
+    async def _handle_typing_candidate(self, cid, websocket):
+        try:
+            response = await self._request(
+                websocket,
+                '/r/Conversation/getByCids',
+                [[f'{cid}@goofish']],
+                timeout=10.0,
+            )
+            payload = self._new_conversation_payload(cid, response)
+            if payload is None:
+                self._save_sync_diagnostic('conversation_candidate_rejected', {'cid': cid}, response)
+                return
+            await self._report_session_opened(payload)
+        except Exception as exc:
+            logger.warning(f'查询闲鱼新会话失败：cid={cid} 原因={exc}')
+        finally:
+            self._session_open_candidates.discard(cid)
+
+    def _schedule_typing_candidates(self, item, message, websocket):
+        if websocket is None or self.ws_client is None:
+            return
+        for cid in self._typing_candidate_cids(item, message, getattr(self, 'myid', '')):
+            if cid in self._session_open_candidates:
+                continue
+            self._session_open_candidates.add(cid)
+            asyncio.create_task(self._handle_typing_candidate(cid, websocket))
 
     def _is_self_message(self, message):
         """闲鱼会把店铺发出的消息回显到同步流，不能再当作买家消息上报。"""
@@ -1626,16 +1742,7 @@ class XianyuLive:
                 continue
             session_opened = self._simplify_session_opened(parsed)
             if session_opened is not None:
-                self._save_raw_message(session_opened)
-                if self.ws_client is not None:
-                    store_id = int(getattr(self, 'store_id', 0) or 0)
-                    dedupe_key = f'session_opened:{store_id}:{session_opened["sessionId"]}'
-                    queued = await self.ws_client.send(session_opened, dedupe_key=dedupe_key)
-                    if queued:
-                        logger.info(
-                            f'检测到买家首次进入会话：买家={session_opened["buyerId"]} '
-                            f'商品={session_opened["itemId"]}'
-                        )
+                await self._report_session_opened(session_opened)
                 continue
             if self._is_background_sync_event(parsed):
                 operation = parsed.get('operation') if isinstance(parsed, dict) else None
@@ -1647,6 +1754,7 @@ class XianyuLive:
             structure, first_seen = self._log_message_structure(parsed)
             if self._is_status_event(parsed):
                 self._save_sync_diagnostic('status_event', item, parsed)
+                self._schedule_typing_candidates(item, parsed, websocket)
                 self._log_status_event_once(parsed)
                 continue
             if self._is_chat_message(parsed):
