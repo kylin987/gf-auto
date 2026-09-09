@@ -72,6 +72,30 @@ class SessionOpenEventTest(unittest.TestCase):
 
         self.assertIsNone(live._simplify_session_opened(seller_helper))
 
+    def test_ignored_session_and_status_events_are_saved_for_diagnosis(self):
+        now_ms = int(time.time() * 1000)
+        live = XianyuLive.__new__(XianyuLive)
+        live._seen_structures = set()
+        live._seen_status_events = set()
+        live._last_sync_log_at = time.time()
+        live._save_raw_message = Mock()
+        live._save_sync_diagnostic = Mock()
+        live.ws_client = None
+        seller_helper = self._session_event(now_ms, now_ms, 'session-1', 'buyer-1')
+        seller_helper['operation']['content']['sessionArouse']['memberFlags'] = 0
+        status_event = {'1': ['unknown-status']}
+
+        asyncio.run(live.handle_message({
+            'body': {'syncPushPackage': {'data': [
+                {'bizType': 1, 'objectType': 2, 'data': seller_helper},
+                {'bizType': 3, 'objectType': 4, 'data': status_event},
+            ]}},
+        }, None))
+
+        self.assertEqual(live._save_sync_diagnostic.call_count, 2)
+        self.assertEqual(live._save_sync_diagnostic.call_args_list[0].args[0], 'background_content_8')
+        self.assertEqual(live._save_sync_diagnostic.call_args_list[1].args[0], 'status_event')
+
     @staticmethod
     def _session_event(arouse_time, create_time, session_id, buyer_id):
         return {

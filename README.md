@@ -127,6 +127,8 @@ python goofish_live.py --debug
 
 闲鱼的买家进入会话通知会按会话去重后上报；批量补发的过期会话唤醒、智能话术和商品定价通知会被静默忽略。其他能够解码但尚未识别业务类型的同步消息按结构保留一个样本到 `chat_YYYY-MM-DD.jsonl`，界面也只提示一次。只有 JSON、解密和 Base64 均失败时才生成 `unparsed_YYYY-MM-DD.jsonl`。
 
+被忽略的 `contentType=8` 和状态类同步包会限量写入 `sync_diagnostic_YYYY-MM-DD.jsonl`，用于协议排查；每次运行最多记录 50 条，不上报网关。
+
 程序会先调用插件网关登录接口，登录成功后连接网关 WebSocket：把收到的文本、图片、订单卡片包装成 `plugin.v1` 的 `xianyu.message` 上报。业务回复、查订单、改价、虚拟发货、取消订单由网关下发 `task.xianyu.*` 任务，程序执行本地 `/api/reply`、`/api/order_detail`、`/api/adjust_price`、`/api/consign_dummy`、`/api/cancel_order` 后回传 `task.result`。
 
 完整 WS 对接说明见 [WS_API.md](WS_API.md)。

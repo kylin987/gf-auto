@@ -72,6 +72,8 @@ def _is_transient_network_error(exc):
 
 
 class XianyuLive:
+    SYNC_DIAGNOSTIC_LIMIT = 50
+
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
                  heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
                  login_state_callback=None,
@@ -127,6 +129,7 @@ class XianyuLive:
         self._seen_parse_failures = set()
         self._seen_status_events = set()
         self._seen_session_open_skips = set()
+        self._sync_diagnostic_count = 0
         self._recent_order_ids_by_cid = {}
         self._uploaded_media_by_source = {}
         self._media_upload_lock = threading.RLock()
@@ -227,6 +230,34 @@ class XianyuLive:
                 handle.write(json.dumps({'received_at': int(time.time()), 'raw': raw}, ensure_ascii=False) + '\n')
         except Exception as exc:
             logger.warning(f'保存未解析闲鱼消息失败: {exc}')
+
+    def _save_sync_diagnostic(self, category, item, parsed):
+        """限量保留被忽略的同步包，便于确认闲鱼协议结构。"""
+        count = int(getattr(self, '_sync_diagnostic_count', 0) or 0)
+        if count >= self.SYNC_DIAGNOSTIC_LIMIT:
+            return
+        self._sync_diagnostic_count = count + 1
+        try:
+            metadata = {
+                str(key): value
+                for key, value in (item.items() if isinstance(item, dict) else [])
+                if key != 'data'
+            }
+            payload = {
+                'received_at': int(time.time() * 1000),
+                'category': str(category),
+                'metadata': metadata,
+                'data': parsed,
+            }
+            log_dir = Path(self.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_path = log_dir / f'sync_diagnostic_{time.strftime("%Y-%m-%d")}.jsonl'
+            with open(file_path, 'a', encoding='utf-8') as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + '\n')
+            if count == 0:
+                logger.info(f'闲鱼关键同步包已保留到 {file_path}')
+        except Exception as exc:
+            logger.warning(f'保存闲鱼同步诊断失败: {exc}')
 
     def _log_protocol_frame_once(self, message):
         lwp = str(message.get('lwp') or '')
@@ -1607,10 +1638,15 @@ class XianyuLive:
                         )
                 continue
             if self._is_background_sync_event(parsed):
+                operation = parsed.get('operation') if isinstance(parsed, dict) else None
+                content = operation.get('content') if isinstance(operation, dict) else None
+                if isinstance(content, dict) and str(content.get('contentType') or '') == '8':
+                    self._save_sync_diagnostic('background_content_8', item, parsed)
                 self._log_session_open_skip_once(parsed)
                 continue
             structure, first_seen = self._log_message_structure(parsed)
             if self._is_status_event(parsed):
+                self._save_sync_diagnostic('status_event', item, parsed)
                 self._log_status_event_once(parsed)
                 continue
             if self._is_chat_message(parsed):
