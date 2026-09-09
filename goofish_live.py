@@ -73,6 +73,8 @@ def _is_transient_network_error(exc):
 
 class XianyuLive:
     SYNC_DIAGNOSTIC_LIMIT = 50
+    SESSION_OPEN_MAX_AGE_SECONDS = 120
+    SESSION_OPEN_FUTURE_TOLERANCE_SECONDS = 30
 
     def __init__(self, cookies_str=None, cookie_file=None, login_timeout=None,
                  heartbeat_interval=None, gateway_auth=None, gateway_auth_manager=None, account_changed_callback=None,
@@ -318,6 +320,24 @@ class XianyuLive:
             return False
         return str(content.get('contentType') or '').strip() in ('8', '11')
 
+    @classmethod
+    def _is_new_session(cls, create_time, now_ms=None):
+        try:
+            create_time = int(create_time or 0)
+        except (TypeError, ValueError):
+            return False
+        if 0 < create_time < 100000000000:
+            create_time *= 1000
+        if create_time <= 0:
+            return False
+
+        current_time = int(time.time() * 1000) if now_ms is None else int(now_ms)
+        age_ms = current_time - create_time
+        return (
+            age_ms <= cls.SESSION_OPEN_MAX_AGE_SECONDS * 1000
+            and age_ms >= -cls.SESSION_OPEN_FUTURE_TOLERANCE_SECONDS * 1000
+        )
+
     def _simplify_session_opened(self, message):
         if not isinstance(message, dict):
             return None
@@ -339,6 +359,8 @@ class XianyuLive:
         except (TypeError, ValueError):
             arouse_time = 0
             create_time = 0
+        if not self._is_new_session(create_time):
+            return None
 
         session_id = str(session_info.get('sessionId') or message.get('sessionId') or '').strip()
         extensions = session_info.get('extensions')
@@ -382,7 +404,9 @@ class XianyuLive:
             missing.append('buyerId')
         if not str(extensions.get('itemId') or '').strip():
             missing.append('itemId')
-        reason = ','.join(missing) or '结构不完整'
+        if not missing:
+            return
+        reason = ','.join(missing)
         seen = getattr(self, '_seen_session_open_skips', set())
         if reason in seen:
             return
@@ -434,6 +458,8 @@ class XianyuLive:
                 create_time = 0
             if 0 < create_time < 100000000000:
                 create_time *= 1000
+            if not self._is_new_session(create_time, now_ms=current_time):
+                return None
 
             pair_first = str(_first_field(chat, 'pairFirst', '2') or '').split('@')[0]
             pair_second = str(_first_field(chat, 'pairSecond', '3') or '').split('@')[0]

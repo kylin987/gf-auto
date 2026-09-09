@@ -57,16 +57,14 @@ class SessionOpenEventTest(unittest.TestCase):
             'xianyu_session_opened_63655953794_1064670207000',
         )
 
-    def test_existing_session_arouse_is_reported_and_outbox_handles_freshness(self):
+    def test_existing_session_arouse_is_not_reported(self):
         now_ms = int(time.time() * 1000)
         live = XianyuLive.__new__(XianyuLive)
         existing = self._session_event(now_ms, now_ms - 300000, 'existing-session', 'buyer-2')
 
         payload = live._simplify_session_opened(existing)
 
-        self.assertEqual(payload['sessionId'], 'existing-session')
-        self.assertEqual(payload['buyerId'], 'buyer-2')
-        self.assertEqual(payload['time'], str(now_ms))
+        self.assertIsNone(payload)
 
     def test_seller_side_session_helper_is_not_reported(self):
         now_ms = int(time.time() * 1000)
@@ -154,7 +152,7 @@ class SessionOpenEventTest(unittest.TestCase):
 
         asyncio.run(run_test())
 
-    def test_existing_buyer_conversation_for_new_item_is_reported(self):
+    def test_existing_buyer_conversation_is_not_reported(self):
         now_ms = int(time.time() * 1000)
         live = XianyuLive.__new__(XianyuLive)
         live.myid = 'seller-1'
@@ -177,10 +175,14 @@ class SessionOpenEventTest(unittest.TestCase):
 
         payload = live._new_conversation_payload('old-cid', response, now_ms=now_ms)
 
-        self.assertEqual(payload['buyerId'], 'buyer-1')
-        self.assertEqual(payload['itemId'], 'item-1')
-        self.assertEqual(payload['time'], str(now_ms))
-        self.assertEqual(payload['messageId'], 'xianyu_session_opened_old-cid_item-1')
+        self.assertIsNone(payload)
+
+    def test_session_without_create_time_is_not_reported(self):
+        now_ms = int(time.time() * 1000)
+        live = XianyuLive.__new__(XianyuLive)
+        session_event = self._session_event(now_ms, 0, 'missing-time', 'buyer-2')
+
+        self.assertIsNone(live._simplify_session_opened(session_event))
 
     def test_same_conversation_uses_different_dedupe_keys_for_different_items(self):
         async def run_test():
