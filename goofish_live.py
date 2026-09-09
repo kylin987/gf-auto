@@ -1582,6 +1582,14 @@ class XianyuLive:
         finally:
             self._sync_ack_running = False
 
+    @staticmethod
+    def _needs_sync_diff_ack(message):
+        if not isinstance(message, dict) or message.get('lwp') != '/s/sync':
+            return False
+        body = message.get('body')
+        sync_extra = body.get('syncExtraType') if isinstance(body, dict) else None
+        return isinstance(sync_extra, dict) and str(sync_extra.get('type') or '') in ('1', '2')
+
     async def heart_beat(self, ws):
         while True:
             msg = {
@@ -1719,7 +1727,7 @@ class XianyuLive:
                                 continue
 
                             await self.handle_message(message, websocket)
-                            if msg_lwp == '/s/sync':
+                            if self._needs_sync_diff_ack(message):
                                 asyncio.create_task(self._sync_ack_flow(websocket))
                     finally:
                         heartbeat_task.cancel()
