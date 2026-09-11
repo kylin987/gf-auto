@@ -73,7 +73,7 @@
 - Gateway WebSocket：每个运行实例分别记录是否完成 bind 及最后一次 pong 时间。仅存在 WebSocket 对象不能判定正常。
 - Outbox：汇总每个实例的待补发和阻塞事件。`blocked` 一律为异常；`pending` 按最老事件年龄分级，短时积压为提醒，超过 10 分钟为异常。
 
-文件写权限通过在目标目录创建并删除临时文件检测。SQLite 只执行最小读写能力检查，不修改业务记录。
+目录写权限通过创建并删除临时文件检测；已有配置和 Cookie 文件分别验证可读及可写打开。SQLite 使用可回滚写事务验证读写能力，不修改业务记录。
 
 ### 4.3 店铺检测项
 
@@ -82,7 +82,7 @@
 - 当前闲鱼账号与绑定店铺是否匹配。
 - Cookie 登录态是否有效。
 - 闲鱼 IM WebSocket 是否已完成注册并持续收到协议响应，同时显示最后健康时间。仅存在 WebSocket 对象不能判定正常。
-- 商品管理权限：直接调用单页方法 `search_seller_items(1, 1)`，不走同步商品的全量分页逻辑，也不触发自动重新登录。接口成功即有权限，即使商品为空；仅闲鱼明确返回的权限拒绝判定为异常。网络失败和登录过期分别归入网络或登录检测，权限结果为 `unknown`。
+- 商品管理能力：直接调用单页方法 `search_seller_items(1, 1)`，不走同步商品的全量分页逻辑，也不触发自动重新登录。MTOP 响应成功即具备管理能力，即使商品为空；网络失败和登录过期分别归入网络或登录检测，本项为 `unknown`。当前没有已抓包确认的权限错误码，因此其他 MTOP 失败首版统一显示“商品管理接口不可用”及闲鱼原始原因，不能猜测为“账号无权限”。后续只有拿到明确权限拒绝样本并加入错误码白名单后，才显示“账号无商品管理权限”。
 - 本机实例是否为当前店铺执行器。
 - 同店铺在线设备数量；超过一台判定异常并提示关闭其他电脑上的同一实例。
 - 最近 30 分钟发送消息、查询订单、改价和发货任务的当前最终状态。只根据同一 `taskId` 当前状态判断成功或失败，禁止用另一笔同类型任务的成功覆盖当前失败。
@@ -119,7 +119,9 @@ Authorization: Bearer <accessToken>
 
 检测开始前，客户端先通过现有登录接口强制刷新 Token，以获得当前 SaaS 授权。Gateway 诊断接口必须校验 Token 为 `businessType=xianyu`、`platform=fish`，并从 Token 获取 `pubId`、`deviceId` 和 `storeIds`，忽略客户端提供的权限范围。请求中的 `storeId` 不在 Token 授权范围时不返回该店铺数据。若 Token 刷新失败，客户端不得把旧 Token 中的店铺快照展示为“当前授权正常”。
 
-闲鱼客户端的每个 WebSocket 连接已经在 bind payload 中携带实际 `storeId` 和 `instanceId`。Gateway 在校验 `storeId` 属于 Token 授权范围后，将这两个字段作为 presence 写入当前实时 Gateway session。诊断接口从在线 session 中按 `pubId + storeId` 过滤，再按 Token 中的 `deviceId` 去重统计设备数。不能直接使用店铺 Group 的连接数量，因为当前连接会加入 Token 中全部店铺 Group。
+闲鱼客户端的每个 WebSocket 连接已经在 bind payload 中携带实际 `storeId` 和 `instanceId`。Gateway 在校验 `storeId` 属于 Token 授权范围后，将这两个字段作为 presence 写入当前实时 Gateway session。诊断接口从在线 session 中按 `pubId + storeId` 过滤，再按每个在线 session 中已验证 claims 的 `deviceId` 去重统计设备数。不能直接使用店铺 Group 的连接数量，因为当前连接会加入 Token 中全部店铺 Group。
+
+“本机是当前执行器”必须同时满足：执行器租约有效、`chrome_logged_in=1`、执行器 `clientId` 实时在线、`pubId + storeId + instanceId` 与请求一致，并且该 `clientId` 对应实时 session claims 中的 `deviceId` 等于当前 Token 的 `deviceId`。
 
 每个店铺返回：
 
@@ -157,7 +159,7 @@ Authorization: Bearer <accessToken>
 - 状态严重度汇总和未知状态统计。
 - 单项超时及异常隔离。
 - Outbox 数量和最老事件年龄分级。
-- 商品列表成功、空列表、无权限、登录过期和网络失败。
+- 商品列表成功、空列表、其他 MTOP 失败、登录过期和网络失败。
 - 多店铺结果互不串店。
 - Gateway 失败时保留本机检测结果。
 
