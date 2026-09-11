@@ -137,3 +137,21 @@ class EventOutbox:
             else:
                 row = connection.execute('SELECT COUNT(*) AS total FROM event_outbox').fetchone()
         return int(row['total'])
+
+    def status_summary(self, now=None):
+        with self._lock, self._connect() as connection:
+            row = connection.execute('''
+                SELECT
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                    SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked_count,
+                    MIN(CASE WHEN status = 'pending' THEN create_time END) AS oldest_pending_at
+                FROM event_outbox
+            ''').fetchone()
+        oldest_pending_at = float(row['oldest_pending_at'] or 0.0)
+        current_time = time.time() if now is None else float(now)
+        return {
+            'pendingCount': int(row['pending_count'] or 0),
+            'blockedCount': int(row['blocked_count'] or 0),
+            'oldestPendingAt': oldest_pending_at,
+            'oldestPendingAge': max(0.0, current_time - oldest_pending_at) if oldest_pending_at else 0.0,
+        }

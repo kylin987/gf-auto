@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from datetime import datetime
 from tkinter import messagebox
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from app_paths import (
     save_instances,
 )
 from app_version import APP_VERSION
+from status_diagnostics import StatusDiagnostics
 import updater
 
 
@@ -31,6 +33,23 @@ C = {
     'line': '#eee2c9', 'nav': '#ffd400', 'nav_active': '#a91f1b', 'nav_muted': '#7a421a',
     'red': '#c7372f', 'red_soft': '#ffe9e5', 'green': '#20815f', 'green_soft': '#e6f6ee',
     'yellow': '#bc2923', 'yellow_deep': '#8f1c19', 'yellow_soft': '#fbe4e1', 'gray_soft': '#f5eddd',
+}
+
+WORKBENCH_NAV_ITEMS = (
+    ('overview', '运行概览'),
+    ('stores', '店铺管理'),
+    ('events', '运行日志'),
+)
+CLIENT_NAV_ITEMS = (
+    ('diagnostics', '状态检测'),
+    ('update', '软件更新'),
+    ('settings', '设置'),
+)
+DIAGNOSTIC_ACTION_LABELS = {
+    'start_instance': '启动实例',
+    'relogin': '重新登录',
+    'check_update': '检查更新',
+    'view_advice': '查看建议',
 }
 
 
@@ -161,6 +180,9 @@ class XianyuDesktopApp:
         self.downloading_update = False
         self.download_dialog = None
         self.update_progress_info = None
+        self.diagnostics_running = False
+        self.diagnostics_result = None
+        self.diagnostics_error = ''
 
         self.app_icon = tk.PhotoImage(file=self._asset_path('assets/brand/fish-app-icon.png'))
         self.brand_logo = self.app_icon.subsample(14, 14)
@@ -252,7 +274,7 @@ class XianyuDesktopApp:
         tk.Label(brand_text, text='影划算票务', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 9, 'bold')).pack(anchor='w', pady=(2, 0))
         tk.Label(self.nav, text='工作台', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=20)
         self.nav_buttons = {}
-        for key, label in [('overview', '店铺概览'), ('events', '实时事件'), ('stores', '店铺实例')]:
+        for key, label in WORKBENCH_NAV_ITEMS:
             button = tk.Button(self.nav, text=label, command=lambda value=key: self._navigate(value),
                                anchor='w', padx=20, pady=10, bd=0, relief='flat', cursor='hand2',
                                bg=C['nav'], fg=C['ink'], activebackground=C['nav_active'], activeforeground='#fff',
@@ -260,7 +282,7 @@ class XianyuDesktopApp:
             button.pack(fill='x', padx=10, pady=2)
             self.nav_buttons[key] = button
         tk.Label(self.nav, text='客户端', bg=C['nav'], fg=C['nav_muted'], font=(UI_FONT, 10, 'bold')).pack(anchor='w', padx=20, pady=(20, 0))
-        for key, label in [('update', '软件更新'), ('settings', '设置')]:
+        for key, label in CLIENT_NAV_ITEMS:
             button = tk.Button(self.nav, text=label, command=lambda value=key: self._navigate(value),
                                anchor='w', padx=20, pady=10, bd=0, relief='flat', cursor='hand2',
                                bg=C['nav'], fg=C['ink'], activebackground=C['nav_active'], activeforeground='#fff',
@@ -283,6 +305,8 @@ class XianyuDesktopApp:
             self._show_overview()
         elif view == 'stores':
             self._show_stores()
+        elif view == 'diagnostics':
+            self._show_diagnostics()
         elif view == 'update':
             self._show_update()
         elif view == 'settings':
@@ -672,6 +696,309 @@ class XianyuDesktopApp:
             return '● 启动失败', C['red_soft'], C['red']
         return '○ 未登录', C['gray_soft'], C['muted']
 
+    def _show_diagnostics(self):
+        self.current_view = 'diagnostics'
+        self._clear_main()
+        self._navigate_button('diagnostics')
+        self._render_diagnostics_page()
+
+    def _render_diagnostics_page(self):
+        header = self._header('状态检测', '检查本机环境、店铺连接与近期任务状态')
+        header_actions = tk.Frame(header, bg=C['surface'])
+        header_actions.pack(side='right', padx=23, pady=14)
+        checked_at = self._format_diagnostics_time(
+            (self.diagnostics_result or {}).get('checkedAt') if isinstance(self.diagnostics_result, dict) else ''
+        )
+        tk.Label(
+            header_actions,
+            text=f'上次检测：{checked_at}' if checked_at else '尚未检测',
+            bg=C['surface'], fg=C['muted'], font=(UI_FONT, 9),
+        ).pack(anchor='e', pady=(0, 6))
+        self.diagnostics_button = tk.Button(
+            header_actions,
+            text='正在检测...' if self.diagnostics_running else '立即检测',
+            command=self._start_status_diagnostics,
+            state='disabled' if self.diagnostics_running else 'normal',
+            bg=C['gray_soft'] if self.diagnostics_running else C['yellow'],
+            fg=C['muted'] if self.diagnostics_running else '#fff',
+            activebackground=C['yellow_deep'], activeforeground='#fff',
+            bd=0, relief='flat', cursor='arrow' if self.diagnostics_running else 'hand2',
+            font=(UI_FONT, 10, 'bold'), padx=15, pady=8,
+        )
+        self.diagnostics_button.pack(anchor='e')
+
+        body = tk.Frame(self.main, bg=C['bg'])
+        body.pack(fill='both', expand=True, padx=25, pady=18)
+        content = self._make_diagnostics_scroll_body(body)
+        if self.diagnostics_running:
+            self._diagnostics_notice(content, '正在检测', '正在读取本机和店铺状态，请稍候。', C['yellow_soft'], C['yellow_deep'])
+        elif self.diagnostics_error:
+            self._diagnostics_notice(content, '检测未完成', self.diagnostics_error, C['red_soft'], C['red'])
+        elif isinstance(self.diagnostics_result, dict):
+            self._render_diagnostics_result(content, self.diagnostics_result)
+        else:
+            self._diagnostics_notice(
+                content,
+                '尚未执行状态检测',
+                '点击“立即检测”后查看本机环境和各店铺的当前状态。',
+                C['surface'], C['muted'],
+            )
+
+    @staticmethod
+    def _make_diagnostics_scroll_body(parent):
+        canvas = tk.Canvas(parent, bg=C['bg'], highlightthickness=0)
+        scrollbar = tk.Scrollbar(parent, orient='vertical', command=canvas.yview)
+        content = tk.Frame(canvas, bg=C['bg'])
+        window = canvas.create_window((0, 0), window=content, anchor='nw')
+        content.bind('<Configure>', lambda _event: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda event: canvas.itemconfigure(window, width=event.width))
+        canvas.bind(
+            '<MouseWheel>',
+            lambda event: canvas.yview_scroll(-3 if event.delta > 0 else 3, 'units'),
+        )
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        return content
+
+    @staticmethod
+    def _diagnostics_notice(parent, title, detail, bg, fg):
+        panel = tk.Frame(
+            parent, bg=bg, highlightthickness=1, highlightbackground=C['line'], padx=22, pady=20,
+        )
+        panel.pack(fill='x', pady=(0, 10))
+        tk.Label(panel, text=title, bg=bg, fg=fg, font=(UI_FONT, 14, 'bold')).pack(anchor='w')
+        tk.Label(
+            panel, text=str(detail), bg=bg, fg=C['ink'] if fg != C['muted'] else C['muted'],
+            justify='left', anchor='w', wraplength=760, font=(UI_FONT, 10),
+        ).pack(fill='x', pady=(7, 0))
+
+    def _render_diagnostics_result(self, parent, result):
+        self._render_diagnostics_summary(parent, result)
+        for group in self._diagnostic_groups(result):
+            self._render_diagnostics_group(parent, group)
+
+    def _render_diagnostics_summary(self, parent, result):
+        status = str(result.get('status') or 'unknown')
+        label, bg, fg = self._diagnostic_status_style(status)
+        counts = result.get('counts') if isinstance(result.get('counts'), dict) else {}
+        panel = tk.Frame(
+            parent, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'], padx=20, pady=17,
+        )
+        panel.pack(fill='x', pady=(0, 10))
+        top = tk.Frame(panel, bg=C['surface'])
+        top.pack(fill='x')
+        tk.Label(top, text='总体结论', bg=C['surface'], fg=C['ink'], font=(UI_FONT, 13, 'bold')).pack(side='left')
+        tk.Label(top, text=label, bg=bg, fg=fg, font=(UI_FONT, 9, 'bold'), padx=8, pady=4).pack(side='right')
+        count_row = tk.Frame(panel, bg=C['surface'])
+        count_row.pack(fill='x', pady=(13, 8))
+        for key, title, color in (
+            ('normal', '正常', C['green']),
+            ('warning', '提醒', C['yellow_deep']),
+            ('error', '异常', C['red']),
+            ('unknown', '未完成', C['muted']),
+        ):
+            block = tk.Frame(count_row, bg=C['surface'])
+            block.pack(side='left', padx=(0, 28))
+            tk.Label(block, text=str(int(counts.get(key) or 0)), bg=C['surface'], fg=color,
+                     font=(UI_FONT, 18, 'bold')).pack(anchor='w')
+            tk.Label(block, text=title, bg=C['surface'], fg=C['muted'], font=(UI_FONT, 9)).pack(anchor='w')
+        issue = self._most_important_diagnostic(result)
+        if issue:
+            tk.Label(
+                panel, text=f"优先关注：{issue.get('title') or '状态异常'} - {issue.get('detail') or ''}",
+                bg=C['surface'], fg=C['ink'], justify='left', anchor='w', wraplength=780,
+                font=(UI_FONT, 10),
+            ).pack(fill='x', pady=(4, 0))
+
+    def _render_diagnostics_group(self, parent, group):
+        items = group.get('items') if isinstance(group.get('items'), list) else []
+        status = self._diagnostic_group_status(items)
+        label, bg, fg = self._diagnostic_status_style(status)
+        panel = tk.Frame(parent, bg=C['surface'], highlightthickness=1, highlightbackground=C['line'])
+        panel.pack(fill='x', pady=5)
+        heading = tk.Frame(panel, bg=C['surface'])
+        heading.pack(fill='x', padx=18, pady=(14, 9))
+        tk.Label(heading, text=group.get('title') or '检测结果', bg=C['surface'], fg=C['ink'],
+                 font=(UI_FONT, 12, 'bold')).pack(side='left')
+        tk.Label(heading, text=label, bg=bg, fg=fg, font=(UI_FONT, 8, 'bold'), padx=7, pady=3).pack(side='right')
+        instance = self._diagnostic_instance(group.get('store'))
+        for index, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            if index:
+                tk.Frame(panel, bg=C['line'], height=1).pack(fill='x', padx=18)
+            self._render_diagnostics_item(panel, item, instance)
+
+    def _render_diagnostics_item(self, parent, item, instance):
+        row = tk.Frame(parent, bg=C['surface'])
+        row.pack(fill='x', padx=18, pady=10)
+        label, bg, fg = self._diagnostic_status_style(str(item.get('status') or 'unknown'))
+        tk.Label(row, text=label, width=7, bg=bg, fg=fg, font=(UI_FONT, 8, 'bold'),
+                 padx=5, pady=3).pack(side='left', anchor='n', padx=(0, 11))
+        text = tk.Frame(row, bg=C['surface'])
+        text.pack(side='left', fill='x', expand=True)
+        tk.Label(text, text=item.get('title') or '检测项', bg=C['surface'], fg=C['ink'],
+                 font=(UI_FONT, 10, 'bold')).pack(anchor='w')
+        tk.Label(
+            text, text=str(item.get('detail') or ''), bg=C['surface'], fg=C['muted'],
+            justify='left', anchor='w', wraplength=620, font=(UI_FONT, 9),
+        ).pack(fill='x', pady=(4, 0))
+        action = str(item.get('action') or '')
+        if action in DIAGNOSTIC_ACTION_LABELS:
+            tk.Button(
+                row, text=DIAGNOSTIC_ACTION_LABELS[action],
+                command=lambda value=action, store=instance, selected=item:
+                    self._run_diagnostics_action(value, store, selected),
+                bg=C['surface'], fg=C['yellow_deep'], activebackground=C['yellow_soft'],
+                bd=0, relief='flat', cursor='hand2', font=(UI_FONT, 9, 'bold'), padx=8, pady=4,
+            ).pack(side='right', anchor='n', padx=(10, 0))
+
+    def _start_status_diagnostics(self):
+        if self.diagnostics_running:
+            return
+        self.diagnostics_running = True
+        self.diagnostics_result = None
+        self.diagnostics_error = ''
+        if self.current_view == 'diagnostics':
+            self._show_diagnostics()
+        threading.Thread(
+            target=self._status_diagnostics_worker,
+            daemon=True,
+            name='status-diagnostics',
+        ).start()
+
+    def _status_diagnostics_worker(self):
+        result = None
+        error = None
+        try:
+            result = StatusDiagnostics(
+                self.gateway_auth_manager,
+                self.gateway_auth,
+                list(self.instances),
+                dict(self.lives),
+                dict(self.run_threads),
+                self.pub_id,
+            ).run()
+        except Exception as exc:
+            error = exc
+        self.root.after(
+            0,
+            lambda value=result, failure=error: self._finish_status_diagnostics(value, failure),
+        )
+
+    def _finish_status_diagnostics(self, result, error):
+        self.diagnostics_running = False
+        if error is not None:
+            self.diagnostics_result = None
+            self.diagnostics_error = str(error) or '状态检测发生未知错误'
+        elif isinstance(result, dict):
+            self.diagnostics_result = result
+            self.diagnostics_error = ''
+        else:
+            self.diagnostics_result = None
+            self.diagnostics_error = '状态检测未返回有效结果'
+        if self.current_view == 'diagnostics':
+            self._show_diagnostics()
+
+    def _run_diagnostics_action(self, action, instance, item):
+        if action not in DIAGNOSTIC_ACTION_LABELS:
+            return
+        if action == 'start_instance' and instance is not None:
+            self._start_instance(instance)
+            return
+        if action == 'relogin' and instance is not None:
+            self._force_relogin(instance)
+            return
+        if action == 'check_update':
+            self._navigate('update')
+            self._start_update_check()
+            return
+        if action == 'view_advice':
+            item = item if isinstance(item, dict) else {}
+            messagebox.showinfo(
+                item.get('title') or '处理建议',
+                str(item.get('detail') or '请稍后重新检测，或查看运行日志确认具体原因。'),
+                parent=self.root,
+            )
+
+    def _diagnostic_instance(self, store):
+        if not isinstance(store, dict):
+            return None
+        instance_id = str(store.get('instanceId') or '')
+        if instance_id:
+            matched = next((item for item in self.instances if str(item.get('id') or '') == instance_id), None)
+            if matched is not None:
+                return matched
+        try:
+            store_id = int(store.get('storeId') or 0)
+        except (TypeError, ValueError):
+            return None
+        return next((item for item in self.instances if int(item.get('storeId') or 0) == store_id), None)
+
+    @staticmethod
+    def _diagnostic_groups(result):
+        if not isinstance(result, dict):
+            return []
+        local_items = [item for item in (result.get('local') or []) if isinstance(item, dict)]
+        gateway = result.get('gateway')
+        if isinstance(gateway, dict):
+            local_items.append(gateway)
+        groups = [{'key': 'local', 'title': '本机环境', 'items': local_items, 'store': None}]
+        for index, store in enumerate(result.get('stores') or []):
+            if not isinstance(store, dict):
+                continue
+            instance_id = str(store.get('instanceId') or '')
+            groups.append({
+                'key': instance_id or f'store-{index}',
+                'title': store.get('name') or f"店铺 #{store.get('storeId') or '未绑定'}",
+                'items': [item for item in (store.get('items') or []) if isinstance(item, dict)],
+                'store': store,
+            })
+        return groups
+
+    @staticmethod
+    def _diagnostic_group_status(items):
+        statuses = {str(item.get('status') or 'unknown') for item in items if isinstance(item, dict)}
+        if 'error' in statuses:
+            return 'error'
+        if 'warning' in statuses:
+            return 'warning'
+        if 'unknown' in statuses:
+            return 'unknown'
+        return 'normal'
+
+    @staticmethod
+    def _most_important_diagnostic(result):
+        items = []
+        for group in XianyuDesktopApp._diagnostic_groups(result):
+            items.extend(group['items'])
+        for status in ('error', 'warning', 'unknown'):
+            matched = next((item for item in items if item.get('status') == status), None)
+            if matched is not None:
+                return matched
+        return None
+
+    @staticmethod
+    def _diagnostic_status_style(status):
+        if status == 'normal':
+            return '正常', C['green_soft'], C['green']
+        if status == 'warning':
+            return '提醒', C['yellow_soft'], C['yellow_deep']
+        if status == 'error':
+            return '异常', C['red_soft'], C['red']
+        return '未完成', C['gray_soft'], C['muted']
+
+    @staticmethod
+    def _format_diagnostics_time(value):
+        if not value:
+            return ''
+        try:
+            parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            return parsed.astimezone().strftime('%Y-%m-%d %H:%M:%S')
+        except (TypeError, ValueError):
+            return str(value)
+
     def _show_update(self):
         self.current_view = 'update'
         self._clear_main()
@@ -798,6 +1125,8 @@ class XianyuDesktopApp:
             self._show_events()
         elif self.current_view == 'stores':
             self._show_stores()
+        elif self.current_view == 'diagnostics':
+            self._show_diagnostics()
         elif self.current_view == 'update':
             self._show_update()
         elif self.current_view == 'settings':

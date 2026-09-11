@@ -18,6 +18,7 @@ import websockets
 
 GATEWAY_LOGIN_URL = 'https://plugin-gateway.yinghuasuan.com/api/v1/client/login'
 GATEWAY_XIANYU_STORE_BIND_URL = 'https://plugin-gateway.yinghuasuan.com/api/v1/client/xianyu/store/bind'
+GATEWAY_DIAGNOSTICS_URL = 'https://plugin-gateway.yinghuasuan.com/api/v1/client/diagnostics'
 DEFAULT_WS_URL = 'wss://plugin-gateway.yinghuasuan.com/ws'
 LOGIN_CONFIG_DIR = os.path.join(os.path.expanduser('~'), '.xianyu')
 LOGIN_CONFIG_FILE = os.path.join(LOGIN_CONFIG_DIR, 'login.json')
@@ -137,6 +138,31 @@ def gateway_bind_xianyu_store(access_token, store_id, platform_shop_id):
     return data['data']
 
 
+def gateway_client_diagnostics(access_token, instances):
+    try:
+        response = requests.post(
+            GATEWAY_DIAGNOSTICS_URL,
+            json={'instances': list(instances or [])},
+            headers={'Authorization': f'Bearer {access_token}'},
+            timeout=15,
+        )
+    except Exception as exc:
+        raise RuntimeError(f'网关状态检测请求失败：{exc}') from exc
+    try:
+        data = response.json()
+    except Exception as exc:
+        if response.status_code == 401:
+            raise GatewayTokenError('登录已过期，请重新登录') from exc
+        raise RuntimeError(f'网关状态检测响应格式错误：{exc}') from exc
+    if not isinstance(data, dict):
+        raise RuntimeError('网关状态检测响应格式错误')
+    if response.status_code == 401 or data.get('code') == 401:
+        raise GatewayTokenError(str(data.get('msg') or '登录已过期，请重新登录'))
+    if response.status_code != 200 or data.get('code') != 200 or not isinstance(data.get('data'), dict):
+        raise RuntimeError(str(data.get('msg') or data))
+    return data['data']
+
+
 class GatewayAuthManager:
     """Refresh one shared gateway login for all store instances in this client."""
 
@@ -188,6 +214,9 @@ class GatewayClient:
         self.outbox = outbox
         self.auth_manager = auth_manager
         self.ws = None
+        self.gateway_bound = False
+        self.bound_at = 0.0
+        self.last_pong_at = 0.0
         self._heartbeat_task = None
         self._outbox_task = None
         self._outbox_wakeup = asyncio.Event()
@@ -209,6 +238,7 @@ class GatewayClient:
                     **gateway_websocket_connect_options(self.ws_url),
                 ) as ws:
                     self.ws = ws
+                    self.gateway_bound = False
                     await self._bind(ws)
                     reconnect_delay = 5
                     self._heartbeat_task = asyncio.create_task(self._heartbeat(ws))
@@ -241,11 +271,13 @@ class GatewayClient:
                 reconnect_delay = min(reconnect_delay * 2, 60)
             finally:
                 self.ws = None
+                self.gateway_bound = False
             if self.stop_event is not None and self.stop_event.is_set():
                 break
             await asyncio.sleep(retry_delay)
 
     async def _bind(self, ws):
+        self.gateway_bound = False
         bind_id = 'bind_' + uuid.uuid4().hex[:12]
         await ws.send(json.dumps({
             'version': 'plugin.v1',
@@ -260,6 +292,8 @@ class GatewayClient:
                 if payload.get('success'):
                     executor = payload.get('executor') or {}
                     self.executor_generation = int(executor.get('generation') or 0)
+                    self.gateway_bound = True
+                    self.bound_at = time.time()
                     logger.info('网关绑定成功')
                     if self.outbox is not None:
                         pending_count = await asyncio.to_thread(self.outbox.count, 'pending')
@@ -418,6 +452,16 @@ class GatewayClient:
             if not future.done():
                 future.set_exception(exc)
 
+    def health_snapshot(self):
+        connected = getattr(self, 'ws', None) is not None
+        return {
+            'connected': connected,
+            'bound': connected and bool(getattr(self, 'gateway_bound', False)),
+            'boundAt': float(getattr(self, 'bound_at', 0.0)),
+            'lastPongAt': float(getattr(self, 'last_pong_at', 0.0)),
+            'executorGeneration': int(getattr(self, 'executor_generation', 0)),
+        }
+
     async def _handle_message(self, raw):
         try:
             data = json.loads(raw)
@@ -426,6 +470,7 @@ class GatewayClient:
         msg_type = data.get('type') or ''
         payload = data.get('payload') or {}
         if msg_type == 'server.pong':
+            self.last_pong_at = time.time()
             executor = payload.get('executor') or {}
             if executor.get('generation'):
                 self.executor_generation = int(executor['generation'])

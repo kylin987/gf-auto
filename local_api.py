@@ -10,9 +10,13 @@ class _LocalApiHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if urlparse(self.path).path == '/health':
+            snapshot = self.server.live.health_snapshot()
             self._send_json({
                 'status': 'ok',
-                'ws_connected': self.server.live.ws is not None,
+                'ws_connected': bool(snapshot['im']['connected']),
+                'instanceId': snapshot['instanceId'],
+                'imRegistered': bool(snapshot['im']['registered']),
+                'gatewayBound': bool(snapshot['gateway']['bound']),
             })
             return
         self._send_json({'error': 'not found'}, status=404)

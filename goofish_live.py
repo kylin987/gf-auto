@@ -123,6 +123,10 @@ class XianyuLive:
         self._login_state_lock = threading.RLock()
         self._login_valid = False
         self._login_revision = 0
+        self.im_registered = False
+        self.im_registered_at = 0.0
+        self.last_im_message_at = 0.0
+        self.im_registration_mid = ''
         self._auto_login_cooldown = max(60, int(os.environ.get('XY_AUTO_LOGIN_COOLDOWN', '900')))
         self._auto_login_retry_at = 0.0
         self._auto_login_notice_at = 0.0
@@ -152,6 +156,85 @@ class XianyuLive:
         """供网关心跳读取的本地状态，不能在 15 秒心跳内请求闲鱼接口。"""
         with self._login_state_lock:
             return bool(self._login_valid and self.myid and self.access_token)
+
+    def health_snapshot(self):
+        gateway_client = getattr(self, 'ws_client', None)
+        gateway = gateway_client.health_snapshot() if gateway_client is not None else {
+            'connected': False,
+            'bound': False,
+            'boundAt': 0.0,
+            'lastPongAt': 0.0,
+            'executorGeneration': 0,
+        }
+        outbox = getattr(self, 'outbox', None)
+        outbox_summary = outbox.status_summary() if outbox is not None else {
+            'pendingCount': 0,
+            'blockedCount': 0,
+            'oldestPendingAt': 0.0,
+            'oldestPendingAge': 0.0,
+        }
+        login_lock = getattr(self, '_login_state_lock', None)
+        if login_lock is None:
+            login_ready = self.is_login_ready()
+            account = self.current_chrome_account()
+        else:
+            with login_lock:
+                login_ready = bool(self._login_valid and self.myid and self.access_token)
+                cookies = dict(self.cookies)
+                account = {
+                    'nick': unquote(str(cookies.get('tracknick') or '')).strip(),
+                    'userId': str(cookies.get('unb') or '').strip(),
+                }
+        im_connected = getattr(self, 'ws', None) is not None
+        return {
+            'instanceId': str(getattr(self, 'instance_id', '')),
+            'storeId': int(getattr(self, 'store_id', 0)),
+            'instanceName': str(getattr(self, 'instance_name', '')),
+            'localApiPort': int(getattr(self, 'local_api_port', 8000)),
+            'loginReady': login_ready,
+            'account': account,
+            'im': {
+                'connected': im_connected,
+                'registered': im_connected and bool(getattr(self, 'im_registered', False)),
+                'registeredAt': float(getattr(self, 'im_registered_at', 0.0)),
+                'lastMessageAt': float(getattr(self, 'last_im_message_at', 0.0)),
+            },
+            'gateway': gateway,
+            'outbox': outbox_summary,
+        }
+
+    async def _initialize_im_connection(self, websocket):
+        self.im_registered = False
+        self.im_registration_mid = ''
+        self.im_registration_mid = str(await self.init(websocket) or '')
+
+    def _is_im_registration_success(self, message):
+        if not isinstance(message, dict) or self._is_im_auth_rejected(message):
+            return False
+        if str(message.get('code') or '').strip() == '200':
+            headers = message.get('headers')
+            response_mid = str(headers.get('mid') or '') if isinstance(headers, dict) else ''
+            registration_mid = str(getattr(self, 'im_registration_mid', '') or '')
+            return bool(registration_mid and response_mid == registration_mid)
+        if str(message.get('lwp') or '').strip() != '/s/sync':
+            return False
+        body = message.get('body')
+        package = body.get('syncPushPackage') if isinstance(body, dict) else None
+        return isinstance(package, dict) and isinstance(package.get('data'), list)
+
+    def _record_im_message(self, message):
+        now = time.time()
+        self.last_im_message_at = now
+        if self._is_im_auth_rejected(message):
+            self.im_registered = False
+            self.im_registration_mid = ''
+        elif not self.im_registered and self._is_im_registration_success(message):
+            self.im_registered = True
+            self.im_registered_at = now
+
+    def _clear_im_connection_health(self):
+        self.im_registered = False
+        self.im_registration_mid = ''
 
     def _set_login_invalid(self):
         with self._login_state_lock:
@@ -869,24 +952,28 @@ class XianyuLive:
             return False
         if self._stop_event.is_set():
             return False
-        self.cookies = trans_cookies(cookies_str)
-        self.user_agent = user_agent or self.user_agent
-        self.access_token = access_token
-        self.device_id = device_id or self.device_id
-        self._device_id_from_store = True
+        cookies = trans_cookies(cookies_str)
         required = ('unb', '_m_h5_tk', 'cookie2')
-        missing = [name for name in required if not self.cookies.get(name)]
+        missing = [name for name in required if not cookies.get(name)]
         if missing:
             logger.error(f'获取 cookie 不完整，缺少: {missing}')
             return False
-        self.save_cookies()
-        self.myid = self.cookies['unb']
-        self.xianyu = XianyuApis(self.cookies, self.device_id, user_agent=self.user_agent)
+        next_user_agent = user_agent or self.user_agent
+        next_device_id = device_id or self.device_id
+        next_xianyu = XianyuApis(cookies, next_device_id, user_agent=next_user_agent)
         with self._login_state_lock:
+            self.cookies = cookies
+            self.user_agent = next_user_agent
+            self.access_token = access_token
+            self.device_id = next_device_id
+            self._device_id_from_store = True
+            self.myid = cookies['unb']
+            self.xianyu = next_xianyu
             self._login_valid = True
             self._login_revision = getattr(self, '_login_revision', 0) + 1
+        self.save_cookies()
         self._clear_auto_chrome_login_cooldown()
-        logger.info(f"登录成功: {self.cookies.get('tracknick')}")
+        logger.info(f"登录成功: {cookies.get('tracknick')}")
         self._notify_chrome_account()
         self._notify_login_state('running', '登录成功，正在监听消息')
         return True
@@ -1562,6 +1649,7 @@ class XianyuLive:
         }
         await ws.send(json.dumps(msg))
         logger.info('init')
+        return msg['headers']['mid']
 
     async def _sync_ack_flow(self, websocket):
         """按 SDK 流程：/s/sync 后先 getState 再 ackDiff，保持长连接。"""
@@ -1671,7 +1759,7 @@ class XianyuLive:
                 async with _ws_connect(self.base_url, headers) as websocket:
                     self.ws = websocket
                     logger.info('WebSocket 已连接，开始注册')
-                    await self.init(websocket)
+                    await self._initialize_im_connection(websocket)
                     connection_login_revision = self._login_revision_snapshot()
                     self._token_failures = 0
                     reconnect_delay = 3
@@ -1680,6 +1768,7 @@ class XianyuLive:
                         async for message in websocket:
                             # logger.info(f"message: {message}")
                             message = json.loads(message)
+                            self._record_im_message(message)
                             msg_lwp = message.get('lwp', '')
                             msg_code = message.get('code')
                             if msg_lwp or (msg_code is not None and msg_code != 200):
@@ -1750,6 +1839,7 @@ class XianyuLive:
                         await asyncio.sleep(60)
             finally:
                 self.ws = None
+                self._clear_im_connection_health()
                 self._reconnect_event.clear()
             if self._stop_event.is_set():
                 break
